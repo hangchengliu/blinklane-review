@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible bug without sharing private dashcam footage.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not upload real dashcam footage, license plates, faces, or GPS traces.
+        请不要上传真实行车记录视频、车牌、人脸或 GPS 轨迹。
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary / 问题概要
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: Use synthetic or privacy-safe sample details when possible.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform / 平台
+      placeholder: macOS version, Python version, Node version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / 日志
+      render: shell

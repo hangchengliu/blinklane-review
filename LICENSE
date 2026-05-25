@@ -1,0 +1,14 @@
+GNU AGPL-3.0-only
+
+BlinkLane / 变道灯光复核助手 is licensed under the GNU Affero General Public
+License version 3 only.
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The full license text is available from the Free Software Foundation:
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+This project depends on Ultralytics YOLO, which Ultralytics offers under
+AGPL-3.0 or Enterprise licensing. Review the upstream license before using this
+project in commercial, closed-source, or network-hosted settings:
+https://www.ultralytics.com/license

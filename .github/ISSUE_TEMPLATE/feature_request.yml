@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest an improvement for BlinkLane.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 你想解决什么问题？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal / 你的建议
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 模块
+      options:
+        - Detection / 检测
+        - Review UI / 复核界面
+        - Export package / 证据包
+        - Documentation / 文档
+        - Other / 其他
