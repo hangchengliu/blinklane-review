@@ -47,8 +47,13 @@ From `backend/app/config.py` (`get_settings`). Legacy `VCY_*` names still work.
 | `BLINKLANE_CLOCK_OFFSET_MINUTES` | `0` (filename clock is local wall time, not UTC) | `VCY_CLOCK_OFFSET_MINUTES` |
 | `BLINKLANE_VOLUME_SCAN` | on (`0` / `false` / `no` / `off` disables) | none |
 | `BLINKLANE_VOLUME_SCAN_INTERVAL_S` | `15` | none |
+| `BLINKLANE_REPORT_URL` | empty | Optional handoff URL opened after confirm; no auto POST |
 
 If the data directory is unset and `.vcy_data` already exists while `.blinklane_data` does not, keep the legacy directory.
+
+## Private Tesla folder validation
+
+To try your own SavedClips folder locally, install detection extras (`python -m pip install -e '.[yolo]'`), point the UI at the folder, and review results yourself. Do not commit real dashcam footage. Detection is not accuracy-guaranteed until tuned on real samples.
 
 ## Hard limits
 

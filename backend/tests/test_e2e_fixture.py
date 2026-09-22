@@ -46,10 +46,21 @@ def test_fixture_import_analyze_confirm_and_export(monkeypatch, tmp_path: Path) 
 
     review = client.patch(
         f"/api/events/{event['id']}/review",
-        json={"review_status": "confirmed", "location": "合成路段", "note": "夹具确认"},
+        json={
+            "review_status": "confirmed",
+            "location": "合成路段",
+            "note": "夹具确认",
+            "plate": "测A12345",
+        },
     )
     assert review.status_code == 200
     assert review.json()["review_status"] == "confirmed"
+    assert review.json()["location"] == "合成路段"
+    assert review.json()["plate"] == "测A12345"
+    assert review.json().get("report_url") in (None, "")
+    assert review.json()["zip_path"]
+    assert review.json()["left_repeater_url"]
+    assert review.json()["right_repeater_url"]
 
     exported = client.post(f"/api/events/{event['id']}/export")
     assert exported.status_code == 200
@@ -67,6 +78,7 @@ def test_fixture_import_analyze_confirm_and_export(monkeypatch, tmp_path: Path) 
 
     assert metadata["review_status"] == "confirmed"
     assert metadata["location"] == "合成路段"
+    assert metadata["plate"] == "测A12345"
     assert "2026-05-25 18:30:02 至 2026-05-25 18:30:07" in metadata["absolute_time"]
     assert "2026-05-25 18:30:02 至 2026-05-25 18:30:07" in report
     assert "合成路段" in report
