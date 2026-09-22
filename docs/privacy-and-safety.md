@@ -6,7 +6,7 @@ BlinkLane 默认本地优先运行。
 
 ## Local Data
 
-- Imported videos are read from the local path you provide.
+- Imported videos are read from a pasted local path or from volume scan. Scan roots are defined in `backend/app/volumes.py` (`/Volumes`, `/media`, `/run/media`, and Windows drive letters). Set `BLINKLANE_VOLUME_SCAN=0` to disable background scanning.
 - Generated clips, frames, metadata, and exports are stored under `.blinklane_data/` (or an existing `.vcy_data/` directory).
 - The app does not require an account or cloud backend.
 

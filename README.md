@@ -1,13 +1,8 @@
 # BlinkLane / 变道灯光复核助手
 
-**Public Preview v0.1.0**  
-Local Tesla Dashcam reviewer for detecting suspected lane changes without an observed turn signal.
+这是一个公益项目：工具被用得越广，真实的道路才越安全。BlinkLane 在你自己的电脑上复核 Tesla 行车记录，标出变道时没有观察到转向灯的片段；由人确认之后，证据包留在这台机器上。它不认定某件事违法，不自动举报，默认不上传，也与 Tesla 或警方无关。以 AGPL-3.0-only 发布，别人可以运行，也可以再分享。
 
-BlinkLane 是一个本地运行的行车视频复核工具。它读取 Tesla Dashcam 文件夹，使用 YOLO 和车辆轨迹分析找出“疑似变道但未观察到转向灯”的片段，并生成可人工复核的证据包。
-
-> Public Preview notice: this is an early testing build. It is useful for experiments and manual review, but it does not make legal conclusions and should not be used as an automated enforcement system.
->
-> 公开预览版说明：这是早期测试版，只做辅助发现和人工复核，不自动举报、不自动认定违法。
+A local tool for safer roads (AGPL-3.0-only): review Tesla dashcam clips for lane changes with no observed turn signal, confirm them yourself, and keep the evidence package on the machine.
 
 ## What It Does / 功能
 
@@ -50,7 +45,14 @@ The default weight file name is `yolo26s.pt`. Ultralytics downloads it on first 
 Optional but recommended for reliable video clipping:
 
 ```bash
+# macOS
 brew install ffmpeg
+
+# Debian / Ubuntu
+sudo apt-get update && sudo apt-get install -y ffmpeg
+
+# Windows (winget)
+winget install --id Gyan.FFmpeg -e
 ```
 
 Run the backend:
@@ -103,7 +105,12 @@ python -m ruff check .
 npm run build
 ```
 
-`backend/tests/test_e2e_fixture.py` walks import → analyze → confirm → zip with synthetic clips and a mocked detector. It does not download YOLO weights and does not use real Tesla footage. Later detection changes should keep that event list comparable.
+Synthetic Tesla folders come from `backend/tests/synthetic.py` (`write_tesla_folder`). The end-to-end fixture walks import → analyze → confirm → zip with a mocked detector (no YOLO weights, no real Tesla footage). The analysis smoke test is what CI runs on its own. Keep this block as the only copy of these commands; other docs link here.
+
+```bash
+python -m pytest backend/tests/test_e2e_fixture.py -q
+python -m pytest backend/tests/test_analysis_smoke.py -q
+```
 
 Data and generated artifacts stay local under:
 
@@ -140,8 +147,18 @@ This repository is in **Public Preview**:
 - Accuracy is not guaranteed before real-world Tesla Dashcam samples are used to tune thresholds.
 - Contributions are welcome, especially around lane-change heuristics, turn-signal detection, privacy-safe sample generation, and Chinese documentation.
 
+## Docs / 文档
+
+- [AGENTS.md](AGENTS.md) — agent entry: layout, run, env, hard limits
+- [DISCLAIMER.md](DISCLAIMER.md)
+- [ROADMAP.md](ROADMAP.md)
+- [SECURITY.md](SECURITY.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/architecture.md](docs/architecture.md)
+- [docs/privacy-and-safety.md](docs/privacy-and-safety.md)
+
 ## License / 许可证
 
-This project is released under **GNU AGPL-3.0-only**. See [LICENSE](LICENSE).
+BlinkLane / 变道灯光复核助手 is released under **GNU AGPL-3.0-only** (`SPDX-License-Identifier: AGPL-3.0-only`). See [LICENSE](LICENSE) for the full AGPL text.
 
-Ultralytics YOLO is offered under AGPL-3.0 or Enterprise licensing by Ultralytics. If you plan to use BlinkLane in a commercial or closed-source setting, review Ultralytics licensing carefully: https://www.ultralytics.com/license
+Ultralytics YOLO is an optional dependency, offered under AGPL-3.0 or Enterprise licensing by Ultralytics. If you plan to use BlinkLane in a commercial or closed-source setting, review Ultralytics licensing carefully: https://www.ultralytics.com/license
