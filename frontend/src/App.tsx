@@ -136,7 +136,22 @@ export function App() {
       const updated = await api.review(selected.id, status, location, note, plate);
       setEvents((items) => items.map((item) => (item.id === updated.id ? updated : item)));
       setSelectedId(updated.id);
-      setExportResult(null);
+      if (status === "confirmed" && updated.zip_path && updated.download_url) {
+        setExportResult({
+          id: updated.id,
+          event_id: updated.id,
+          path: "",
+          zip_path: updated.zip_path,
+          download_url: updated.download_url,
+          submission_message: updated.submission_message || undefined,
+          report_url: updated.report_url || undefined
+        });
+        if (updated.report_url) {
+          window.open(updated.report_url, "_blank", "noopener,noreferrer");
+        }
+      } else {
+        setExportResult(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存复核失败");
     }
@@ -362,11 +377,11 @@ function ReviewPanel({
         <span className={`review ${event.review_status}`}>{statusText[event.review_status]}</span>
       </div>
 
-      <div className="mediaGrid">
+      <div className="mediaGrid wide">
         <div className="mediaBox">
-          <div className="sectionTitle">标注片段</div>
+          <div className="sectionTitle">前视标注片段</div>
           {event.annotated_clip_url ? (
-            <video src={event.annotated_clip_url} controls />
+            <EventWindowVideo src={event.annotated_clip_url} startS={0} endS={event.end_s - event.start_s} />
           ) : (
             <div className="placeholder">暂无标注片段</div>
           )}
@@ -377,6 +392,22 @@ function ReviewPanel({
             <img src={event.key_frame_url} alt="事件关键帧" />
           ) : (
             <div className="placeholder">暂无关键帧</div>
+          )}
+        </div>
+        <div className="mediaBox">
+          <div className="sectionTitle">左 repeater（对齐事件时段）</div>
+          {event.left_repeater_url ? (
+            <EventWindowVideo src={event.left_repeater_url} startS={event.start_s} endS={event.end_s} />
+          ) : (
+            <div className="placeholder">无 left_repeater 文件</div>
+          )}
+        </div>
+        <div className="mediaBox">
+          <div className="sectionTitle">右 repeater（对齐事件时段）</div>
+          {event.right_repeater_url ? (
+            <EventWindowVideo src={event.right_repeater_url} startS={event.start_s} endS={event.end_s} />
+          ) : (
+            <div className="placeholder">无 right_repeater 文件</div>
           )}
         </div>
       </div>
@@ -426,11 +457,49 @@ function ReviewPanel({
       </div>
 
       {exportResult && (
-        <a className="download" href={exportResult.download_url}>
-          下载 {exportResult.zip_path.split("/").pop()}
-          {exportResult.submission_message ? ` · ${exportResult.submission_message}` : ""}
-        </a>
+        <div className="handoff">
+          <a className="download" href={exportResult.download_url}>
+            下载 {exportResult.zip_path.split("/").pop()}
+            {exportResult.submission_message ? ` · ${exportResult.submission_message}` : ""}
+          </a>
+          <p className="handoffPath">本机证据包：{exportResult.zip_path}</p>
+          {exportResult.report_url ? (
+            <p className="handoffHint">
+              已在浏览器打开举报入口。请在该网站自己的页面上传证据包并完成验证码与登录。
+            </p>
+          ) : null}
+        </div>
       )}
     </section>
   );
+}
+
+function EventWindowVideo({ src, startS, endS }: { src: string; startS: number; endS: number }) {
+  const ref = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    const seekStart = () => {
+      if (video.currentTime < startS - 0.05) {
+        video.currentTime = startS;
+      }
+    };
+    const clampEnd = () => {
+      if (video.currentTime >= endS) {
+        video.pause();
+        video.currentTime = endS;
+      }
+    };
+    video.addEventListener("loadedmetadata", seekStart);
+    video.addEventListener("play", seekStart);
+    video.addEventListener("timeupdate", clampEnd);
+    return () => {
+      video.removeEventListener("loadedmetadata", seekStart);
+      video.removeEventListener("play", seekStart);
+      video.removeEventListener("timeupdate", clampEnd);
+    };
+  }, [src, startS, endS]);
+
+  return <video ref={ref} src={src} controls preload="metadata" />;
 }

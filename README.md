@@ -128,6 +128,7 @@ Older builds used `.vcy_data/`, `vcy.sqlite3`, and `VCY_*` environment variables
 - If neither variable is set, an existing `.vcy_data` directory is kept when `.blinklane_data` does not exist yet. Otherwise the default is `.blinklane_data`.
 - `BLINKLANE_MODEL_NAME` (legacy `VCY_MODEL_NAME`) defaults to `yolo26s.pt`.
 - `BLINKLANE_SAMPLE_RATE_FPS` (legacy `VCY_SAMPLE_RATE_FPS`) defaults to `5`.
+- `BLINKLANE_REPORT_URL` (default empty): after you **confirm** an event, the API returns this URL together with the local evidence zip path. The UI opens the URL in a new tab so you can submit through that site’s own page. BlinkLane does not POST to the site, log in, or bypass CAPTCHA.
 
 Tesla filenames look like `2026-05-25_18-30-02-front.mp4`. That clock is **local wall time**, not UTC. `BLINKLANE_CLOCK_OFFSET_MINUTES` (legacy `VCY_CLOCK_OFFSET_MINUTES`, default `0`) is added to the filename clock when a folder is imported. Evidence reports include the resulting absolute time.
 
@@ -135,9 +136,13 @@ Importing the same folder again rescans it and updates segments. Running analysi
 
 ## Evidence and upload / 证据包与上传
 
-A confirmed event exports a city-agnostic package: clip, screenshot, absolute time, place, plate, and confirm status. Upload goes through `submit(evidence) -> SubmissionResult`. That call accepts only events the user has confirmed. The default `LocalExportAdapter` leaves the zip on this machine. No city website is connected, and nothing is uploaded without that confirmation.
+A confirmed event exports a city-agnostic package: clip, screenshot, absolute time, place, plate, and confirm status. Upload goes through `submit(evidence) -> SubmissionResult`. That call accepts only events the user has confirmed. The default `LocalExportAdapter` leaves the zip on this machine. Optional `BLINKLANE_REPORT_URL` returns that URL plus the local zip path after confirm so you can open the site yourself; BlinkLane does not POST, log in, or bypass CAPTCHA.
 
-已确认的事件会导出城市无关的证据包：片段、截图、绝对时间、地点、号牌、确认状态。上传接口是 `submit(evidence) -> SubmissionResult`，只接受人工确认过的事件。默认的 `LocalExportAdapter` 把压缩包留在本机。这里不连接任何城市网站，也不会在确认前上传。
+已确认的事件会导出城市无关的证据包：片段、截图、绝对时间、地点、号牌、确认状态。上传接口是 `submit(evidence) -> SubmissionResult`，只接受人工确认过的事件。默认的 `LocalExportAdapter` 把压缩包留在本机。可选环境变量 `BLINKLANE_REPORT_URL` 会在确认后把举报入口 URL 与 zip 路径一并返回，由你在浏览器里自行打开网站并上传；这里不代填表单、不登录、不过验证码。
+
+### Validate on your own Tesla folder / 用私有行车记录自测
+
+Install detection extras (`python -m pip install -e '.[yolo]'`), import a private SavedClips folder path in the UI, and treat every hit as unverified until you review it. Do not commit real footage to the repository. Thresholds are not tuned for accuracy on real dashcam video yet.
 
 ## Project Status / 项目状态
 

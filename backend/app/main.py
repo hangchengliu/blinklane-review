@@ -312,7 +312,10 @@ def update_review(event_id: str, payload: ReviewRequest) -> dict[str, Any]:
         updated = row_to_dict(
             conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         )
-    return with_media_urls(updated or {})
+        response = with_media_urls(updated or {})
+        if payload.review_status == "confirmed" and updated:
+            response.update(_export_confirmed_event(conn, updated, now))
+    return response
 
 
 @app.post("/api/events/{event_id}/export")
@@ -326,44 +329,8 @@ def export_event(event_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Event not found.")
         if event["review_status"] != "confirmed":
             raise HTTPException(status_code=400, detail="Only confirmed events can be exported.")
-        segment = row_to_dict(
-            conn.execute(
-                "SELECT * FROM video_segments WHERE id = ?",
-                (event["segment_id"],),
-            ).fetchone()
-        )
-        if not segment:
-            raise HTTPException(status_code=404, detail="Segment not found.")
-        package_dir, zip_path = export_evidence_package(event, segment)
-        fields = evidence_fields(event, segment)
-        evidence = Evidence(
-            event_id=str(event["id"]),
-            clip=fields["clip"],
-            screenshot=fields["screenshot"],
-            absolute_time=fields["absolute_time"],
-            place=str(fields["place"]),
-            plate=str(fields["plate"]),
-            confirm_status=str(fields["confirm_status"]),
-            package_dir=str(package_dir),
-            zip_path=str(zip_path),
-        )
-        submission = get_upload_adapter().submit(evidence)
-        if not submission.ok:
-            raise HTTPException(status_code=400, detail=submission.message)
-        export_id = new_id()
-        conn.execute(
-            "INSERT INTO exports (id, event_id, path, zip_path, created_at) VALUES (?, ?, ?, ?, ?)",
-            (export_id, event_id, str(package_dir), str(zip_path), now),
-        )
-    return {
-        "id": export_id,
-        "event_id": event_id,
-        "path": str(package_dir),
-        "zip_path": str(zip_path),
-        "download_url": f"/api/exports/{export_id}/download",
-        "adapter": submission.adapter,
-        "submission_message": submission.message,
-    }
+        exported = _export_confirmed_event(conn, event, now)
+    return exported
 
 
 @app.get("/api/exports/{export_id}/download")
@@ -378,6 +345,16 @@ def download_export(export_id: str) -> FileResponse:
     if not zip_path.exists():
         raise HTTPException(status_code=404, detail="Export file not found.")
     return FileResponse(zip_path, filename=zip_path.name, media_type="application/zip")
+
+
+@app.get("/api/media/source")
+def media_source(path: str) -> FileResponse:
+    target = Path(path).expanduser().resolve()
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Media not found.")
+    if target.suffix.lower() != ".mp4":
+        raise HTTPException(status_code=403, detail="Invalid media type.")
+    return FileResponse(target)
 
 
 @app.get("/api/media/{path:path}")
@@ -586,6 +563,54 @@ def fail_interrupted_jobs() -> int:
         return int(cursor.rowcount or 0)
 
 
+def _media_url_for_path(path: str | None, *, data_dir: Path) -> str | None:
+    if not path:
+        return None
+    target = Path(path)
+    if not target.is_file():
+        return None
+    try:
+        rel = target.resolve().relative_to(data_dir)
+        return f"/api/media/{rel.as_posix()}"
+    except ValueError:
+        pass
+    return f"/api/media/source?path={target.resolve().as_posix()}"
+
+
+def _attach_repeater_urls(event: dict[str, Any]) -> None:
+    segment_id = event.get("segment_id")
+    session_id = event.get("session_id")
+    if not segment_id or not session_id:
+        event["left_repeater_url"] = None
+        event["right_repeater_url"] = None
+        return
+    settings = get_settings()
+    with connect() as conn:
+        segment = conn.execute(
+            "SELECT starts_at FROM video_segments WHERE id = ?",
+            (segment_id,),
+        ).fetchone()
+        if segment is None:
+            event["left_repeater_url"] = None
+            event["right_repeater_url"] = None
+            return
+        rows = conn.execute(
+            """
+            SELECT camera, path FROM video_segments
+            WHERE session_id = ? AND starts_at = ?
+              AND camera IN ('left_repeater', 'right_repeater')
+            """,
+            (session_id, segment["starts_at"]),
+        ).fetchall()
+        by_camera = {str(row["camera"]): str(row["path"]) for row in rows}
+    event["left_repeater_url"] = _media_url_for_path(
+        by_camera.get("left_repeater"), data_dir=settings.data_dir
+    )
+    event["right_repeater_url"] = _media_url_for_path(
+        by_camera.get("right_repeater"), data_dir=settings.data_dir
+    )
+
+
 def with_media_urls(event: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
     for key, url_key in (
@@ -593,16 +618,54 @@ def with_media_urls(event: dict[str, Any]) -> dict[str, Any]:
         ("annotated_clip_path", "annotated_clip_url"),
         ("key_frame_path", "key_frame_url"),
     ):
-        value = event.get(key)
-        if value:
-            try:
-                rel = Path(value).resolve().relative_to(settings.data_dir)
-                event[url_key] = f"/api/media/{rel.as_posix()}"
-            except ValueError:
-                event[url_key] = None
-        else:
-            event[url_key] = None
+        event[url_key] = _media_url_for_path(event.get(key), data_dir=settings.data_dir)
+    _attach_repeater_urls(event)
     return event
+
+
+def _export_confirmed_event(conn: Any, event: dict[str, Any], now: str) -> dict[str, Any]:
+    segment = row_to_dict(
+        conn.execute(
+            "SELECT * FROM video_segments WHERE id = ?",
+            (event["segment_id"],),
+        ).fetchone()
+    )
+    if not segment:
+        raise HTTPException(status_code=404, detail="Segment not found.")
+    package_dir, zip_path = export_evidence_package(event, segment)
+    fields = evidence_fields(event, segment)
+    evidence = Evidence(
+        event_id=str(event["id"]),
+        clip=fields["clip"],
+        screenshot=fields["screenshot"],
+        absolute_time=fields["absolute_time"],
+        place=str(fields["place"]),
+        plate=str(fields["plate"]),
+        confirm_status=str(fields["confirm_status"]),
+        package_dir=str(package_dir),
+        zip_path=str(zip_path),
+    )
+    submission = get_upload_adapter().submit(evidence)
+    if not submission.ok:
+        raise HTTPException(status_code=400, detail=submission.message)
+    export_id = new_id()
+    conn.execute(
+        "INSERT INTO exports (id, event_id, path, zip_path, created_at) VALUES (?, ?, ?, ?, ?)",
+        (export_id, event["id"], str(package_dir), str(zip_path), now),
+    )
+    payload: dict[str, Any] = {
+        "id": export_id,
+        "event_id": event["id"],
+        "path": str(package_dir),
+        "zip_path": str(zip_path),
+        "download_url": f"/api/exports/{export_id}/download",
+        "adapter": submission.adapter,
+        "submission_message": submission.message,
+    }
+    report_url = get_settings().report_url
+    if report_url:
+        payload["report_url"] = report_url
+    return payload
 
 
 def _extract_path_label(labels: list[str], prefix: str) -> str | None:

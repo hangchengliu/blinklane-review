@@ -84,6 +84,12 @@ export interface EventItem {
   raw_clip_url?: string | null;
   annotated_clip_url?: string | null;
   key_frame_url?: string | null;
+  left_repeater_url?: string | null;
+  right_repeater_url?: string | null;
+  report_url?: string | null;
+  zip_path?: string | null;
+  download_url?: string | null;
+  submission_message?: string | null;
 }
 
 export interface ExportResponse {
@@ -94,4 +100,5 @@ export interface ExportResponse {
   download_url: string;
   adapter?: string;
   submission_message?: string;
+  report_url?: string | null;
 }

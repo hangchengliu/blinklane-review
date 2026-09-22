@@ -39,6 +39,7 @@ class Settings:
     legacy_storage: bool
     volume_scan_enabled: bool
     volume_scan_interval_s: float
+    report_url: str
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -86,6 +87,7 @@ def get_settings() -> Settings:
         _first_env("BLINKLANE_CLOCK_OFFSET_MINUTES", "VCY_CLOCK_OFFSET_MINUTES") or "0"
     )
     interval = float(_first_env("BLINKLANE_VOLUME_SCAN_INTERVAL_S") or "15")
+    report_url = (_first_env("BLINKLANE_REPORT_URL") or "").strip()
     db_name = LEGACY_DB_NAME if legacy else DB_NAME
     return Settings(
         data_dir=data_dir,
@@ -96,6 +98,7 @@ def get_settings() -> Settings:
         legacy_storage=legacy,
         volume_scan_enabled=_env_flag("BLINKLANE_VOLUME_SCAN", True),
         volume_scan_interval_s=interval,
+        report_url=report_url,
     )
 
 
