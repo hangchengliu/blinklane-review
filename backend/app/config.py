@@ -37,6 +37,15 @@ class Settings:
     sample_rate_fps: float
     clock_offset_minutes: float
     legacy_storage: bool
+    volume_scan_enabled: bool
+    volume_scan_interval_s: float
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _first_env(*names: str) -> str | None:
@@ -76,6 +85,7 @@ def get_settings() -> Settings:
     offset = float(
         _first_env("BLINKLANE_CLOCK_OFFSET_MINUTES", "VCY_CLOCK_OFFSET_MINUTES") or "0"
     )
+    interval = float(_first_env("BLINKLANE_VOLUME_SCAN_INTERVAL_S") or "15")
     db_name = LEGACY_DB_NAME if legacy else DB_NAME
     return Settings(
         data_dir=data_dir,
@@ -84,6 +94,8 @@ def get_settings() -> Settings:
         sample_rate_fps=sample_rate,
         clock_offset_minutes=offset,
         legacy_storage=legacy,
+        volume_scan_enabled=_env_flag("BLINKLANE_VOLUME_SCAN", True),
+        volume_scan_interval_s=interval,
     )
 
 

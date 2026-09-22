@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 from collections.abc import AsyncIterator
@@ -19,8 +20,25 @@ from .exporter import export_evidence_package
 from .schemas import AnalyzeRequest, HealthResponse, ImportRequest, ReviewRequest
 from .tesla import TeslaClipInfo, find_tesla_clips, new_id, probe_video
 from .video import ffmpeg_available
+from .volumes import scan_and_import, volume_snapshot
 
 INTERRUPTED_JOB_MESSAGE = "Interrupted before completion; marked failed on startup."
+
+
+async def _volume_scan_loop(stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(scan_and_import)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        if stop.is_set():
+            return
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=get_settings().volume_scan_interval_s)
+        except TimeoutError:
+            continue
 
 
 @asynccontextmanager
@@ -28,7 +46,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     ensure_data_dirs()
     init_db()
     fail_interrupted_jobs()
-    yield
+    stop = asyncio.Event()
+    scanner: asyncio.Task[None] | None = None
+    if get_settings().volume_scan_enabled:
+        scanner = asyncio.create_task(_volume_scan_loop(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        if scanner is not None:
+            scanner.cancel()
+            try:
+                await scanner
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(
@@ -61,6 +92,11 @@ def health() -> HealthResponse:
         data_dir=str(settings.data_dir),
         messages=messages,
     )
+
+
+@app.get("/api/volumes")
+def list_volumes() -> dict[str, Any]:
+    return volume_snapshot()
 
 
 @app.post("/api/import")

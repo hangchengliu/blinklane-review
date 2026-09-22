@@ -1,7 +1,15 @@
 import { AlertCircle, CheckCircle2, Download, FileVideo, Play, RefreshCw, XCircle } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { EventItem, ExportResponse, Health, ImportResponse, Job, ReviewStatus } from "./types";
+import type {
+  EventItem,
+  ExportResponse,
+  Health,
+  ImportResponse,
+  Job,
+  ReviewStatus,
+  VolumeScan
+} from "./types";
 
 const statusText: Record<ReviewStatus, string> = {
   pending: "待定",
@@ -19,6 +27,8 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
+  const [volumes, setVolumes] = useState<VolumeScan>({ scanning: false, volumes: [] });
+  const loadedVolume = useRef<string | null>(null);
 
   const selected = useMemo(
     () => events.find((event) => event.id === selectedId) || events[0] || null,
@@ -27,6 +37,24 @@ export function App() {
 
   useEffect(() => {
     api.health().then(setHealth).catch((err) => setError(err.message));
+  }, []);
+
+  useEffect(() => {
+    let stop = false;
+    async function pollVolumes() {
+      try {
+        const data = await api.volumes();
+        if (!stop) setVolumes(data);
+      } catch (err) {
+        if (!stop) setError(err instanceof Error ? err.message : "卷扫描失败");
+      }
+    }
+    void pollVolumes();
+    const timer = window.setInterval(() => void pollVolumes(), 4000);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -52,12 +80,13 @@ export function App() {
     if (items.length && !selectedId) setSelectedId(items[0].id);
   }
 
-  async function handleImport() {
+  async function loadFolder(folder: string) {
     setError("");
     setBusy(true);
     setJob(null);
     try {
-      const result = await api.importFolder(folderPath.trim());
+      const result = await api.importFolder(folder);
+      setFolderPath(folder);
       setImportResult(result);
       setEvents([]);
       setSelectedId(null);
@@ -68,6 +97,22 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  useEffect(() => {
+    if (importResult || busy) return;
+    const imported = volumes.volumes.filter((item) => item.status === "imported");
+    if (imported.length !== 1) return;
+    const folder = imported[0].folder_path;
+    if (loadedVolume.current === folder) return;
+    loadedVolume.current = folder;
+    void loadFolder(folder);
+  }, [volumes, importResult, busy]);
+
+  async function handleImport() {
+    const folder = folderPath.trim();
+    if (!folder) return;
+    await loadFolder(folder);
   }
 
   async function handleAnalyze() {
@@ -131,6 +176,31 @@ export function App() {
           <span>{message}</span>
         </div>
       ))}
+
+      <section className="volumes">
+        <div className="sectionTitle">{volumes.scanning ? "已发现卷 · 导入中" : "已发现卷"}</div>
+        {volumes.volumes.length === 0 && (
+          <div className="empty">
+            {volumes.scanning ? "正在扫描已挂载的卷…" : "还没有发现 Tesla 片段。可以在下面手填路径。"}
+          </div>
+        )}
+        {volumes.volumes.map((volume) => (
+          <div className="volumeRow" key={volume.folder_path}>
+            <div>
+              <strong>{volume.folder_path}</strong>
+              <span>
+                {volume.clip_count} 个片段 · {volume.message}
+              </span>
+            </div>
+            <button
+              onClick={() => void loadFolder(volume.folder_path)}
+              disabled={busy || volume.status === "importing"}
+            >
+              {volume.status === "importing" ? "导入中" : "载入"}
+            </button>
+          </div>
+        ))}
+      </section>
 
       <section className="toolbar">
         <label className="pathInput">

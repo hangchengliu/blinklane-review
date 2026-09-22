@@ -125,6 +125,35 @@ p {
   background: #ffe2df;
 }
 
+.volumes {
+  background: #fff;
+  border: 1px solid #e1e5e8;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 8px;
+}
+
+.volumeRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #eef2f4;
+}
+
+.volumeRow strong {
+  display: block;
+  word-break: break-all;
+}
+
+.volumeRow span {
+  color: #69727b;
+  display: block;
+  margin-top: 3px;
+  font-size: 13px;
+}
+
 .toolbar {
   align-items: flex-end;
   flex-wrap: wrap;

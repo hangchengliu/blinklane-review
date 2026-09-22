@@ -7,7 +7,7 @@ BlinkLane has two local parts:
 
 ## Data Flow
 
-1. User pastes a Tesla Dashcam folder path.
+1. BlinkLane scans mounted volumes for Tesla clips and imports them. A pasted folder path remains the fallback.
 2. Backend scans Tesla-style MP4 names and stores video segments in SQLite.
 3. User starts analysis.
 4. Backend analyzes front-camera clips, tracks vehicles, scores lane-change and turn-signal evidence.

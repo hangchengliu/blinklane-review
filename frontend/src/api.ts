@@ -4,7 +4,8 @@ import type {
   Health,
   ImportResponse,
   Job,
-  ReviewStatus
+  ReviewStatus,
+  VolumeScan
 } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -30,6 +31,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<Health>("/api/health"),
+  volumes: () => request<VolumeScan>("/api/volumes"),
   importFolder: (folderPath: string) =>
     request<ImportResponse>("/api/import", {
       method: "POST",

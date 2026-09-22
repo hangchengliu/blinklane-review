@@ -72,7 +72,15 @@ Open:
 http://127.0.0.1:5173/
 ```
 
-Paste a Tesla Dashcam folder path such as:
+Plug in the Tesla USB drive. BlinkLane scans mount points for Tesla-named MP4 trees and imports them:
+
+- macOS: `/Volumes`
+- Linux: `/media` and `/run/media`
+- Windows: drive roots such as `D:\`
+
+The page lists discovered volumes and shows when an import is in progress. Set `BLINKLANE_VOLUME_SCAN=0` to turn the background scan off, or `BLINKLANE_VOLUME_SCAN_INTERVAL_S` to change the interval (default 15 seconds).
+
+You can still paste a folder path by hand. For example:
 
 ```text
 /Volumes/TESLADRIVE/TeslaCam/SavedClips/2026-05-25_18-30-02

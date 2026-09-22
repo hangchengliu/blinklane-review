@@ -30,6 +30,20 @@ export interface VideoSegment {
   height?: number | null;
 }
 
+export interface DiscoveredVolume {
+  root: string;
+  folder_path: string;
+  clip_count: number;
+  status: "importing" | "imported" | "failed";
+  session_id?: string | null;
+  message: string;
+}
+
+export interface VolumeScan {
+  scanning: boolean;
+  volumes: DiscoveredVolume[];
+}
+
 export interface ImportResponse {
   session: Session;
   segments: VideoSegment[];
