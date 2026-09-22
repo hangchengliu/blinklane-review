@@ -45,7 +45,14 @@ The default weight file name is `yolo26s.pt`. Ultralytics downloads it on first 
 Optional but recommended for reliable video clipping:
 
 ```bash
+# macOS
 brew install ffmpeg
+
+# Debian / Ubuntu
+sudo apt-get update && sudo apt-get install -y ffmpeg
+
+# Windows (winget)
+winget install --id Gyan.FFmpeg -e
 ```
 
 Run the backend:
@@ -98,7 +105,12 @@ python -m ruff check .
 npm run build
 ```
 
-`backend/tests/test_e2e_fixture.py` walks import → analyze → confirm → zip with synthetic clips and a mocked detector. It does not download YOLO weights and does not use real Tesla footage. Later detection changes should keep that event list comparable.
+Synthetic Tesla folders come from `backend/tests/synthetic.py` (`write_tesla_folder`). The end-to-end fixture walks import → analyze → confirm → zip with a mocked detector (no YOLO weights, no real Tesla footage). The analysis smoke test is what CI runs on its own. Keep this block as the only copy of these commands; other docs link here.
+
+```bash
+python -m pytest backend/tests/test_e2e_fixture.py -q
+python -m pytest backend/tests/test_analysis_smoke.py -q
+```
 
 Data and generated artifacts stay local under:
 
@@ -135,8 +147,18 @@ This repository is in **Public Preview**:
 - Accuracy is not guaranteed before real-world Tesla Dashcam samples are used to tune thresholds.
 - Contributions are welcome, especially around lane-change heuristics, turn-signal detection, privacy-safe sample generation, and Chinese documentation.
 
+## Docs / 文档
+
+- [AGENTS.md](AGENTS.md) — agent entry: layout, run, env, hard limits
+- [DISCLAIMER.md](DISCLAIMER.md)
+- [ROADMAP.md](ROADMAP.md)
+- [SECURITY.md](SECURITY.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/architecture.md](docs/architecture.md)
+- [docs/privacy-and-safety.md](docs/privacy-and-safety.md)
+
 ## License / 许可证
 
-This project is released under **GNU AGPL-3.0-only**. See [LICENSE](LICENSE).
+BlinkLane / 变道灯光复核助手 is released under **GNU AGPL-3.0-only** (`SPDX-License-Identifier: AGPL-3.0-only`). See [LICENSE](LICENSE) for the full AGPL text.
 
-Ultralytics YOLO is offered under AGPL-3.0 or Enterprise licensing by Ultralytics. If you plan to use BlinkLane in a commercial or closed-source setting, review Ultralytics licensing carefully: https://www.ultralytics.com/license
+Ultralytics YOLO is an optional dependency, offered under AGPL-3.0 or Enterprise licensing by Ultralytics. If you plan to use BlinkLane in a commercial or closed-source setting, review Ultralytics licensing carefully: https://www.ultralytics.com/license

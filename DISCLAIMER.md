@@ -9,7 +9,7 @@ BlinkLane 是一个本地辅助复核工具，只负责提示疑似片段，最�
 - The software does not determine whether a legal violation occurred.
 - The software does not automatically report incidents to any government or traffic authority.
 - The software does not bypass login, CAPTCHA, or platform restrictions.
-- The software does not upload videos unless a future contributor explicitly adds and documents such a feature.
+- Evidence stays on this machine by default. The default `LocalExportAdapter` leaves the zip locally. Upload is only for events the user has already confirmed, through an explicit submit step; nothing leaves the machine without that confirmation.
 - Users are responsible for checking local laws, evidence requirements, and privacy obligations before submitting any report.
 
 ## Accuracy / 准确性

@@ -2,19 +2,18 @@
 
 ## Public Preview v0.1
 
-- Local Tesla Dashcam folder import.
+- Mount-volume scan for Tesla Dashcam trees, with pasted folder path as fallback.
 - YOLO-based vehicle tracking.
 - Heuristic lane-change candidate detection.
-- Turn-signal blink scoring.
+- Turn-signal blink scoring (front camera plus time-aligned repeaters).
 - Human review UI.
-- Evidence package export.
+- City-agnostic local evidence package export (`LocalExportAdapter`).
 
 ## Next
 
 - Real-world sample tuning with privacy-safe fixtures.
 - Multi-camera synchronization in the review UI.
 - Better lane model and perspective calibration.
-- Chinese city-specific evidence package presets.
 - Optional packaged desktop build.
 
 ## Not Planned for v0.x
@@ -23,3 +22,4 @@
 - CAPTCHA bypass or login automation.
 - Legal violation determination.
 - Cloud upload by default.
+- City-specific evidence package presets or city-site adapters.
