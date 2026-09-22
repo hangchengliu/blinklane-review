@@ -30,6 +30,20 @@ export interface VideoSegment {
   height?: number | null;
 }
 
+export interface DiscoveredVolume {
+  root: string;
+  folder_path: string;
+  clip_count: number;
+  status: "importing" | "imported" | "failed";
+  session_id?: string | null;
+  message: string;
+}
+
+export interface VolumeScan {
+  scanning: boolean;
+  volumes: DiscoveredVolume[];
+}
+
 export interface ImportResponse {
   session: Session;
   segments: VideoSegment[];
@@ -66,6 +80,7 @@ export interface EventItem {
   review_status: ReviewStatus;
   location: string;
   note: string;
+  plate: string;
   raw_clip_url?: string | null;
   annotated_clip_url?: string | null;
   key_frame_url?: string | null;
@@ -77,4 +92,6 @@ export interface ExportResponse {
   path: string;
   zip_path: string;
   download_url: string;
+  adapter?: string;
+  submission_message?: string;
 }

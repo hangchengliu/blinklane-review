@@ -7,7 +7,7 @@ BlinkLane 默认本地优先运行。
 ## Local Data
 
 - Imported videos are read from the local path you provide.
-- Generated clips, frames, metadata, and exports are stored under `.vcy_data/`.
+- Generated clips, frames, metadata, and exports are stored under `.blinklane_data/` (or an existing `.vcy_data/` directory).
 - The app does not require an account or cloud backend.
 
 ## Public Issue Hygiene

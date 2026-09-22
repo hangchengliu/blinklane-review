@@ -30,17 +30,31 @@ def test_export_evidence_package(monkeypatch, tmp_path: Path) -> None:
         "review_status": "confirmed",
         "location": "测试路段",
         "note": "人工确认",
+        "plate": "FIXTURE1",
         "raw_clip_path": str(raw),
         "annotated_clip_path": None,
         "key_frame_path": str(key),
     }
-    segment = {"path": "/videos/2026-05-25_18-30-02-front.mp4"}
+    segment = {
+        "path": "/videos/2026-05-25_18-30-02-front.mp4",
+        "starts_at": "2026-05-25T18:30:02",
+    }
 
     package_dir, zip_path = export_evidence_package(event, segment)
 
     metadata = json.loads((package_dir / "metadata.json").read_text(encoding="utf-8"))
+    report = (package_dir / "report.txt").read_text(encoding="utf-8")
     assert metadata["event_id"] == "evt1"
-    assert (package_dir / "report.txt").exists()
+    assert metadata["absolute_time"] == "2026-05-25 18:30:03 至 2026-05-25 18:30:07"
+    assert metadata["clip"] == str(raw)
+    assert metadata["screenshot"] == str(key)
+    assert metadata["place"] == "测试路段"
+    assert metadata["plate"] == "FIXTURE1"
+    assert metadata["confirm_status"] == "confirmed"
+    assert "绝对时间：2026-05-25 18:30:03 至 2026-05-25 18:30:07" in report
+    assert "号牌：FIXTURE1" in report
+    assert "确认状态：已确认" in report
+    assert "不是 UTC" in report
     assert zip_path.exists()
     with zipfile.ZipFile(zip_path) as archive:
         assert "metadata.json" in archive.namelist()

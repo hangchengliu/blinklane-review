@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 from collections.abc import AsyncIterator
@@ -12,20 +13,54 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from .analysis.pipeline import analyze_segment, yolo_available
+from .adapters import Evidence, get_upload_adapter
+from .analysis.pipeline import SegmentAnalysis, analyze_segment, yolo_available
 from .config import ensure_data_dirs, get_settings
 from .db import connect, init_db, row_to_dict, rows_to_dicts
-from .exporter import export_evidence_package
+from .exporter import evidence_fields, export_evidence_package
 from .schemas import AnalyzeRequest, HealthResponse, ImportRequest, ReviewRequest
-from .tesla import find_tesla_clips, new_id, probe_video
+from .tesla import TeslaClipInfo, find_tesla_clips, new_id, probe_video
 from .video import ffmpeg_available
+from .volumes import scan_and_import, volume_snapshot
+
+INTERRUPTED_JOB_MESSAGE = "Interrupted before completion; marked failed on startup."
+
+
+async def _volume_scan_loop(stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(scan_and_import)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        if stop.is_set():
+            return
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=get_settings().volume_scan_interval_s)
+        except TimeoutError:
+            continue
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     ensure_data_dirs()
     init_db()
-    yield
+    fail_interrupted_jobs()
+    stop = asyncio.Event()
+    scanner: asyncio.Task[None] | None = None
+    if get_settings().volume_scan_enabled:
+        scanner = asyncio.create_task(_volume_scan_loop(stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        if scanner is not None:
+            scanner.cancel()
+            try:
+                await scanner
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(
@@ -60,61 +95,44 @@ def health() -> HealthResponse:
     )
 
 
+@app.get("/api/volumes")
+def list_volumes() -> dict[str, Any]:
+    return volume_snapshot()
+
+
 @app.post("/api/import")
 def import_folder(payload: ImportRequest) -> dict[str, Any]:
     folder = Path(payload.folder_path).expanduser().resolve()
+    return import_folder_path(folder)
+
+
+def import_folder_path(folder: Path) -> dict[str, Any]:
+    folder = folder.expanduser().resolve()
     if not folder.exists() or not folder.is_dir():
         raise HTTPException(status_code=400, detail="Folder does not exist or is not a directory.")
 
     init_db()
     now = datetime.now(UTC).isoformat()
+    clips = find_tesla_clips(folder)
     with connect() as conn:
         existing = conn.execute(
             "SELECT * FROM sessions WHERE folder_path = ?",
             (str(folder),),
         ).fetchone()
-        if existing:
-            session = row_to_dict(existing) or {}
-            segments = rows_to_dicts(
-                conn.execute(
-                    "SELECT * FROM video_segments WHERE session_id = ? ORDER BY starts_at, camera",
-                    (session["id"],),
-                ).fetchall()
-            )
-            return {"session": session, "segments": segments, "reused": True}
-
-        clips = find_tesla_clips(folder)
-        if not clips:
+        if existing is None and not clips:
             raise HTTPException(status_code=400, detail="No Tesla Dashcam MP4 files found.")
-
-        session_id = new_id()
-        conn.execute(
-            "INSERT INTO sessions (id, folder_path, created_at) VALUES (?, ?, ?)",
-            (session_id, str(folder), now),
-        )
-        for clip in clips:
-            probe = probe_video(clip.path)
+        if existing is None:
+            session_id = new_id()
             conn.execute(
-                """
-                INSERT INTO video_segments (
-                  id, session_id, camera, starts_at, path, duration_s,
-                  fps, width, height, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    new_id(),
-                    session_id,
-                    clip.camera,
-                    clip.starts_at.isoformat(),
-                    str(clip.path),
-                    probe.duration_s,
-                    probe.fps,
-                    probe.width,
-                    probe.height,
-                    now,
-                ),
+                "INSERT INTO sessions (id, folder_path, created_at) VALUES (?, ?, ?)",
+                (session_id, str(folder), now),
             )
+            _insert_segments(conn, session_id, clips, now)
+            reused = False
+        else:
+            session_id = str(existing["id"])
+            changed = _sync_segments(conn, session_id, clips, now)
+            reused = not changed
 
         session = row_to_dict(
             conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
@@ -125,7 +143,82 @@ def import_folder(payload: ImportRequest) -> dict[str, Any]:
                 (session_id,),
             ).fetchall()
         )
-    return {"session": session, "segments": segments, "reused": False}
+    return {"session": session, "segments": segments, "reused": reused}
+
+
+def _insert_segments(conn: Any, session_id: str, clips: list[TeslaClipInfo], now: str) -> None:
+    for clip in clips:
+        _insert_segment(conn, session_id, clip, now)
+
+
+def _insert_segment(conn: Any, session_id: str, clip: TeslaClipInfo, now: str) -> None:
+    probe = probe_video(clip.path)
+    conn.execute(
+        """
+        INSERT INTO video_segments (
+          id, session_id, camera, starts_at, path, duration_s,
+          fps, width, height, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_id(),
+            session_id,
+            clip.camera,
+            clip.starts_at.isoformat(),
+            str(clip.path),
+            probe.duration_s,
+            probe.fps,
+            probe.width,
+            probe.height,
+            now,
+        ),
+    )
+
+
+def _sync_segments(conn: Any, session_id: str, clips: list[TeslaClipInfo], now: str) -> bool:
+    """Rescan a folder into an existing session. Return whether the file set changed."""
+
+    rows = conn.execute(
+        "SELECT * FROM video_segments WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    by_path = {row["path"]: row for row in rows}
+    seen: set[str] = set()
+    changed = False
+    for clip in clips:
+        path = str(clip.path)
+        seen.add(path)
+        starts_at = clip.starts_at.isoformat()
+        probe = probe_video(clip.path)
+        current = by_path.get(path)
+        if current is None:
+            changed = True
+            _insert_segment(conn, session_id, clip, now)
+            continue
+        if current["camera"] != clip.camera or current["starts_at"] != starts_at:
+            changed = True
+        conn.execute(
+            """
+            UPDATE video_segments
+            SET camera = ?, starts_at = ?, duration_s = ?, fps = ?, width = ?, height = ?
+            WHERE id = ?
+            """,
+            (
+                clip.camera,
+                starts_at,
+                probe.duration_s,
+                probe.fps,
+                probe.width,
+                probe.height,
+                current["id"],
+            ),
+        )
+    for path, row in by_path.items():
+        if path not in seen:
+            changed = True
+            conn.execute("DELETE FROM video_segments WHERE id = ?", (row["id"],))
+    return changed
 
 
 @app.post("/api/analyze")
@@ -196,17 +289,25 @@ def update_review(event_id: str, payload: ReviewRequest) -> dict[str, Any]:
         conn.execute(
             """
             UPDATE events
-            SET review_status = ?, location = ?, note = ?
+            SET review_status = ?, location = ?, note = ?, plate = ?
             WHERE id = ?
             """,
-            (payload.review_status, payload.location, payload.note, event_id),
+            (payload.review_status, payload.location, payload.note, payload.plate, event_id),
         )
         conn.execute(
             """
-            INSERT INTO event_reviews (id, event_id, status, location, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO event_reviews (id, event_id, status, location, note, plate, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (review_id, event_id, payload.review_status, payload.location, payload.note, now),
+            (
+                review_id,
+                event_id,
+                payload.review_status,
+                payload.location,
+                payload.note,
+                payload.plate,
+                now,
+            ),
         )
         updated = row_to_dict(
             conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
@@ -234,6 +335,21 @@ def export_event(event_id: str) -> dict[str, Any]:
         if not segment:
             raise HTTPException(status_code=404, detail="Segment not found.")
         package_dir, zip_path = export_evidence_package(event, segment)
+        fields = evidence_fields(event, segment)
+        evidence = Evidence(
+            event_id=str(event["id"]),
+            clip=fields["clip"],
+            screenshot=fields["screenshot"],
+            absolute_time=fields["absolute_time"],
+            place=str(fields["place"]),
+            plate=str(fields["plate"]),
+            confirm_status=str(fields["confirm_status"]),
+            package_dir=str(package_dir),
+            zip_path=str(zip_path),
+        )
+        submission = get_upload_adapter().submit(evidence)
+        if not submission.ok:
+            raise HTTPException(status_code=400, detail=submission.message)
         export_id = new_id()
         conn.execute(
             "INSERT INTO exports (id, event_id, path, zip_path, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -245,6 +361,8 @@ def export_event(event_id: str) -> dict[str, Any]:
         "path": str(package_dir),
         "zip_path": str(zip_path),
         "download_url": f"/api/exports/{export_id}/download",
+        "adapter": submission.adapter,
+        "submission_message": submission.message,
     }
 
 
@@ -306,6 +424,7 @@ def run_analysis_job(job_id: str) -> None:
         fail_job(job_id, "No front camera segments found.")
         return
 
+    warnings: list[str] = []
     try:
         for index, segment in enumerate(segments):
             base_progress = index / len(segments)
@@ -323,14 +442,16 @@ def run_analysis_job(job_id: str) -> None:
                     message=message,
                 )
 
-            candidates = analyze_segment(
+            analysis: SegmentAnalysis = analyze_segment(
                 segment["id"],
                 Path(segment["path"]),
                 model_name=job["model_name"],
                 sample_rate_fps=job["sample_rate_fps"],
                 progress=progress,
+                repeater_paths=_repeater_paths(segment),
             )
-            insert_candidates(job["session_id"], segment, candidates)
+            warnings.extend(analysis.warnings)
+            replace_segment_events(job["session_id"], segment, analysis.events)
             update_job(
                 job_id,
                 status="running",
@@ -338,21 +459,54 @@ def run_analysis_job(job_id: str) -> None:
                 message=f"Finished {Path(segment['path']).name}",
             )
         finished = datetime.now(UTC).isoformat()
-        update_job(job_id, status="completed", progress=1.0, message="Analysis completed")
+        update_job(
+            job_id,
+            status="completed",
+            progress=1.0,
+            message=_completion_message(warnings),
+        )
         with connect() as conn:
             conn.execute(
                 "UPDATE analysis_jobs SET finished_at = ?, updated_at = ? WHERE id = ?",
                 (finished, finished, job_id),
             )
     except Exception as exc:
-        fail_job(job_id, str(exc))
+        detail = str(exc)
+        if warnings:
+            detail = f"{detail} Asset warnings: {_warning_text(warnings)}"
+        fail_job(job_id, detail)
 
 
-def insert_candidates(session_id: str, segment: dict[str, Any], candidates: list[Any]) -> None:
+def _repeater_paths(segment: dict[str, Any]) -> dict[str, Path]:
+    """Side cameras that share the front clip's filename clock."""
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT camera, path FROM video_segments
+            WHERE session_id = ? AND starts_at = ?
+              AND camera IN ('left_repeater', 'right_repeater')
+            """,
+            (segment["session_id"], segment["starts_at"]),
+        ).fetchall()
+    return {str(row["camera"]): Path(str(row["path"])) for row in rows}
+
+
+def replace_segment_events(
+    session_id: str,
+    segment: dict[str, Any],
+    candidates: list[Any],
+) -> None:
+    """Replace events for one segment so a second analysis does not stack copies."""
+
     now = datetime.now(UTC).isoformat()
     with connect() as conn:
+        conn.execute(
+            "DELETE FROM events WHERE session_id = ? AND segment_id = ?",
+            (session_id, segment["id"]),
+        )
         for candidate in candidates:
-            labels = candidate.reason_labels
+            labels = list(candidate.reason_labels)
             raw_clip_path = _extract_path_label(labels, "raw_clip=")
             annotated_clip_path = _extract_path_label(labels, "annotated_clip=")
             key_frame_path = _extract_path_label(labels, "key_frame=")
@@ -413,6 +567,25 @@ def fail_job(job_id: str, message: str) -> None:
         )
 
 
+def fail_interrupted_jobs() -> int:
+    """Mark queued or running jobs failed after a process restart."""
+
+    now = datetime.now(UTC).isoformat()
+    with connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE analysis_jobs
+            SET status = 'failed',
+                message = ?,
+                finished_at = COALESCE(finished_at, ?),
+                updated_at = ?
+            WHERE status IN ('queued', 'running')
+            """,
+            (INTERRUPTED_JOB_MESSAGE, now, now),
+        )
+        return int(cursor.rowcount or 0)
+
+
 def with_media_urls(event: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
     for key, url_key in (
@@ -435,5 +608,20 @@ def with_media_urls(event: dict[str, Any]) -> dict[str, Any]:
 def _extract_path_label(labels: list[str], prefix: str) -> str | None:
     for label in labels:
         if label.startswith(prefix):
-            return label.removeprefix(prefix)
+            path = label.removeprefix(prefix).strip()
+            if path:
+                return path
     return None
+
+
+def _warning_text(warnings: list[str]) -> str:
+    detail = " | ".join(warnings)
+    if len(detail) > 1800:
+        return detail[:1800] + "…"
+    return detail
+
+
+def _completion_message(warnings: list[str]) -> str:
+    if not warnings:
+        return "Analysis completed"
+    return f"Analysis completed with asset warnings: {_warning_text(warnings)}"

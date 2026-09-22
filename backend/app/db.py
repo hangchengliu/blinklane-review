@@ -1,12 +1,24 @@
+"""SQLite access.
+
+Connections set a busy timeout and are closed by the context manager.
+``with connect()`` therefore commits on success, rolls back on error, and
+always closes. Callers that run long work (analysis) must not hold a
+connection across that work: open one for each short read or write. WAL
+mode lets those short writers run while API requests read.
+"""
+
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from .config import ensure_data_dirs, get_settings
+
+SQLITE_TIMEOUT_SECONDS = 30.0
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -65,6 +77,7 @@ CREATE TABLE IF NOT EXISTS events (
   review_status TEXT NOT NULL DEFAULT 'pending',
   location TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
+  plate TEXT NOT NULL DEFAULT '',
   raw_clip_path TEXT,
   annotated_clip_path TEXT,
   key_frame_path TEXT,
@@ -77,6 +90,7 @@ CREATE TABLE IF NOT EXISTS event_reviews (
   status TEXT NOT NULL,
   location TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
+  plate TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -90,20 +104,46 @@ CREATE TABLE IF NOT EXISTS exports (
 """
 
 
-def connect(db_path: Path | None = None) -> sqlite3.Connection:
+@contextmanager
+def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     settings = get_settings()
     ensure_data_dirs(settings)
     db_path = db_path or settings.db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = sqlite3.connect(
+        db_path,
+        timeout=SQLITE_TIMEOUT_SECONDS,
+        check_same_thread=False,
+    )
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+    try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(f"PRAGMA busy_timeout={int(SQLITE_TIMEOUT_SECONDS * 1000)}")
+        conn.execute("PRAGMA journal_mode=WAL")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_db(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    _add_column(conn, "events", "plate", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "event_reviews", "plate", "TEXT NOT NULL DEFAULT ''")
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -1,7 +1,15 @@
 import { AlertCircle, CheckCircle2, Download, FileVideo, Play, RefreshCw, XCircle } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { EventItem, ExportResponse, Health, ImportResponse, Job, ReviewStatus } from "./types";
+import type {
+  EventItem,
+  ExportResponse,
+  Health,
+  ImportResponse,
+  Job,
+  ReviewStatus,
+  VolumeScan
+} from "./types";
 
 const statusText: Record<ReviewStatus, string> = {
   pending: "待定",
@@ -19,6 +27,8 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
+  const [volumes, setVolumes] = useState<VolumeScan>({ scanning: false, volumes: [] });
+  const loadedVolume = useRef<string | null>(null);
 
   const selected = useMemo(
     () => events.find((event) => event.id === selectedId) || events[0] || null,
@@ -30,12 +40,34 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    let stop = false;
+    async function pollVolumes() {
+      try {
+        const data = await api.volumes();
+        if (!stop) setVolumes(data);
+      } catch (err) {
+        if (!stop) setError(err instanceof Error ? err.message : "卷扫描失败");
+      }
+    }
+    void pollVolumes();
+    const timer = window.setInterval(() => void pollVolumes(), 4000);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!job || (job.status !== "queued" && job.status !== "running")) return;
     const timer = window.setInterval(async () => {
-      const fresh = await api.job(job.id);
-      setJob(fresh);
-      if (fresh.status === "completed") {
-        await refreshEvents(fresh.session_id);
+      try {
+        const fresh = await api.job(job.id);
+        setJob(fresh);
+        if (fresh.status === "completed") {
+          await refreshEvents(fresh.session_id);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "任务状态获取失败");
       }
     }, 1200);
     return () => window.clearInterval(timer);
@@ -48,11 +80,13 @@ export function App() {
     if (items.length && !selectedId) setSelectedId(items[0].id);
   }
 
-  async function handleImport() {
+  async function loadFolder(folder: string) {
     setError("");
     setBusy(true);
+    setJob(null);
     try {
-      const result = await api.importFolder(folderPath.trim());
+      const result = await api.importFolder(folder);
+      setFolderPath(folder);
       setImportResult(result);
       setEvents([]);
       setSelectedId(null);
@@ -63,6 +97,22 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  useEffect(() => {
+    if (importResult || busy) return;
+    const imported = volumes.volumes.filter((item) => item.status === "imported");
+    if (imported.length !== 1) return;
+    const folder = imported[0].folder_path;
+    if (loadedVolume.current === folder) return;
+    loadedVolume.current = folder;
+    void loadFolder(folder);
+  }, [volumes, importResult, busy]);
+
+  async function handleImport() {
+    const folder = folderPath.trim();
+    if (!folder) return;
+    await loadFolder(folder);
   }
 
   async function handleAnalyze() {
@@ -79,11 +129,11 @@ export function App() {
     }
   }
 
-  async function handleReview(status: ReviewStatus, location: string, note: string) {
+  async function handleReview(status: ReviewStatus, location: string, note: string, plate: string) {
     if (!selected) return;
     setError("");
     try {
-      const updated = await api.review(selected.id, status, location, note);
+      const updated = await api.review(selected.id, status, location, note, plate);
       setEvents((items) => items.map((item) => (item.id === updated.id ? updated : item)));
       setSelectedId(updated.id);
       setExportResult(null);
@@ -126,6 +176,31 @@ export function App() {
           <span>{message}</span>
         </div>
       ))}
+
+      <section className="volumes">
+        <div className="sectionTitle">{volumes.scanning ? "已发现卷 · 导入中" : "已发现卷"}</div>
+        {volumes.volumes.length === 0 && (
+          <div className="empty">
+            {volumes.scanning ? "正在扫描已挂载的卷…" : "还没有发现 Tesla 片段。可以在下面手填路径。"}
+          </div>
+        )}
+        {volumes.volumes.map((volume) => (
+          <div className="volumeRow" key={volume.folder_path}>
+            <div>
+              <strong>{volume.folder_path}</strong>
+              <span>
+                {volume.clip_count} 个片段 · {volume.message}
+              </span>
+            </div>
+            <button
+              onClick={() => void loadFolder(volume.folder_path)}
+              disabled={busy || volume.status === "importing"}
+            >
+              {volume.status === "importing" ? "导入中" : "载入"}
+            </button>
+          </div>
+        ))}
+      </section>
 
       <section className="toolbar">
         <label className="pathInput">
@@ -249,16 +324,18 @@ function ReviewPanel({
   exportResult
 }: {
   event: EventItem | null;
-  onReview: (status: ReviewStatus, location: string, note: string) => void;
+  onReview: (status: ReviewStatus, location: string, note: string, plate: string) => void;
   onExport: () => void;
   exportResult: ExportResponse | null;
 }) {
   const [location, setLocation] = useState("");
   const [note, setNote] = useState("");
+  const [plate, setPlate] = useState("");
 
   useEffect(() => {
     setLocation(event?.location || "");
     setNote(event?.note || "");
+    setPlate(event?.plate || "");
   }, [event?.id]);
 
   if (!event) {
@@ -324,17 +401,21 @@ function ReviewPanel({
         <input value={location} onChange={(evt) => setLocation(evt.target.value)} placeholder="道路、方向、附近参照物" />
       </label>
       <label className="field">
+        <span>号牌</span>
+        <input value={plate} onChange={(evt) => setPlate(evt.target.value)} placeholder="选填，人工填写" />
+      </label>
+      <label className="field">
         <span>备注</span>
-        <textarea value={note} onChange={(evt) => setNote(evt.target.value)} placeholder="车牌、车道、现场情况" />
+        <textarea value={note} onChange={(evt) => setNote(evt.target.value)} placeholder="车道、现场情况" />
       </label>
 
       <div className="actions">
-        <button onClick={() => onReview("confirmed", location, note)}>
+        <button onClick={() => onReview("confirmed", location, note, plate)}>
           <CheckCircle2 size={18} />
           确认
         </button>
-        <button onClick={() => onReview("pending", location, note)}>待定</button>
-        <button className="secondary" onClick={() => onReview("dismissed", location, note)}>
+        <button onClick={() => onReview("pending", location, note, plate)}>待定</button>
+        <button className="secondary" onClick={() => onReview("dismissed", location, note, plate)}>
           <XCircle size={18} />
           排除
         </button>
@@ -347,6 +428,7 @@ function ReviewPanel({
       {exportResult && (
         <a className="download" href={exportResult.download_url}>
           下载 {exportResult.zip_path.split("/").pop()}
+          {exportResult.submission_message ? ` · ${exportResult.submission_message}` : ""}
         </a>
       )}
     </section>

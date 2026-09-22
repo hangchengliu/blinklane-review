@@ -29,7 +29,7 @@ npm run build
 ## Pull Request Rules
 
 - Do not commit real dashcam videos, license plates, faces, GPS traces, or other private evidence.
-- Keep generated files out of git: `.vcy_data/`, `.venv/`, `node_modules/`, `dist/`, and model weights.
+- Keep generated files out of git: `.blinklane_data/`, `.vcy_data/`, `.venv/`, `node_modules/`, `dist/`, and model weights.
 - Make safety wording explicit when adding automation around reports or exports.
 - Add or update tests when changing parsing, scoring, export, or API behavior.
 

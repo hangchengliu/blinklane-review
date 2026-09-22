@@ -10,7 +10,18 @@ def test_parse_tesla_filename() -> None:
 
     assert info is not None
     assert info.camera == "front"
-    assert info.starts_at.isoformat() == "2026-05-25T18:30:02+00:00"
+    assert info.starts_at.tzinfo is None
+    assert info.starts_at.isoformat() == "2026-05-25T18:30:02"
+
+
+def test_filename_clock_uses_configured_offset(monkeypatch) -> None:
+    monkeypatch.setenv("BLINKLANE_CLOCK_OFFSET_MINUTES", "30")
+
+    info = parse_tesla_filename("2026-05-25_18-30-02-front.mp4")
+
+    assert info is not None
+    assert info.starts_at.tzinfo is None
+    assert info.starts_at.isoformat() == "2026-05-25T19:00:02"
 
 
 def test_find_tesla_clips_ignores_non_matching_files(tmp_path: Path) -> None:

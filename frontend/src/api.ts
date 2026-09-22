@@ -4,7 +4,8 @@ import type {
   Health,
   ImportResponse,
   Job,
-  ReviewStatus
+  ReviewStatus,
+  VolumeScan
 } from "./types";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -30,6 +31,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<Health>("/api/health"),
+  volumes: () => request<VolumeScan>("/api/volumes"),
   importFolder: (folderPath: string) =>
     request<ImportResponse>("/api/import", {
       method: "POST",
@@ -43,10 +45,10 @@ export const api = {
   job: (jobId: string) => request<Job>(`/api/jobs/${jobId}`),
   events: (sessionId?: string) =>
     request<EventItem[]>(sessionId ? `/api/events?session_id=${sessionId}` : "/api/events"),
-  review: (eventId: string, reviewStatus: ReviewStatus, location: string, note: string) =>
+  review: (eventId: string, reviewStatus: ReviewStatus, location: string, note: string, plate: string) =>
     request<EventItem>(`/api/events/${eventId}/review`, {
       method: "PATCH",
-      body: JSON.stringify({ review_status: reviewStatus, location, note })
+      body: JSON.stringify({ review_status: reviewStatus, location, note, plate })
     }),
   exportEvent: (eventId: string) =>
     request<ExportResponse>(`/api/events/${eventId}/export`, { method: "POST" })

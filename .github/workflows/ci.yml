@@ -25,6 +25,9 @@ jobs:
         run: npm ci
       - name: Lint backend
         run: python -m ruff check .
+      # Mocked detector only. Do not add a job that downloads YOLO weights.
+      - name: Analysis smoke (mocked detector, no YOLO weights)
+        run: python -m pytest backend/tests/test_analysis_smoke.py -q
       - name: Test backend
         run: python -m pytest
       - name: Build frontend
