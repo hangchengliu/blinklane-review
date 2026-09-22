@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from backend.app.analysis.trajectory import detect_lane_change_events
+from backend.app.analysis.trajectory import (
+    LANE_CROSS_BONUS,
+    LATERAL_SHIFT_THRESHOLD,
+    detect_lane_change_events,
+)
 from backend.app.analysis.types import SignalSeries, TrackSample
 
 
@@ -43,3 +47,50 @@ def test_lane_change_with_observed_signal_is_suppressed() -> None:
     events = detect_lane_change_events(samples, {7: series})
 
     assert events == []
+
+
+def test_ego_motion_compensation_drops_the_same_pixel_shift() -> None:
+    samples = [make_sample(idx, 180 + idx * 11) for idx in range(18)]
+    series = SignalSeries(
+        timestamps_s=[idx * 0.2 for idx in range(18)],
+        left_energy=[0.01] * 18,
+        right_energy=[0.01] * 18,
+    )
+    centers = {sample.timestamp_s: sample.bottom_center[0] - 40 for sample in samples}
+
+    plain = detect_lane_change_events(samples, {7: series})
+    compensated = detect_lane_change_events(
+        samples,
+        {7: series},
+        lane_center_by_timestamp=centers,
+    )
+
+    assert LATERAL_SHIFT_THRESHOLD == 0.12
+    assert len(plain) == 1
+    assert compensated == []
+
+
+def test_crossing_a_stable_lane_increases_the_score() -> None:
+    samples = [make_sample(idx, 250 + idx * 8) for idx in range(18)]
+    series = SignalSeries(
+        timestamps_s=[sample.timestamp_s for sample in samples],
+        left_energy=[0.01] * len(samples),
+        right_energy=[0.01] * len(samples),
+    )
+    centers = {sample.timestamp_s: 320.0 for sample in samples}
+
+    plain = detect_lane_change_events(samples, {7: series})
+    crossed = detect_lane_change_events(
+        samples,
+        {7: series},
+        lane_center_by_timestamp=centers,
+    )
+
+    assert len(plain) == 1
+    assert len(crossed) == 1
+    assert "lane_geometry" in crossed[0].reason_labels
+    assert crossed[0].lane_change_score > plain[0].lane_change_score
+    assert crossed[0].lane_change_score == round(
+        min(1.0, plain[0].lane_change_score + LANE_CROSS_BONUS),
+        3,
+    )

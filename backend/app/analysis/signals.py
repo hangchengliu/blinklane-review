@@ -51,6 +51,58 @@ def _amber_energy(roi: np.ndarray) -> float:
     return max(0.0, min(1.0, score * 8.0))
 
 
+def merge_aligned_repeater_energy(
+    series: SignalSeries,
+    repeater_samples: list[tuple[float, float]],
+    *,
+    side: str,
+    tolerance_s: float = 0.15,
+) -> bool:
+    """Max-merge repeater amber energy into one side of the front-camera series.
+
+    ``repeater_samples`` are ``(timestamp_s, energy)`` on the repeater clip's own
+    clock, which shares the front clip's start. A sample is used only when its
+    timestamp is within ``tolerance_s`` of a front sample, so a blink from
+    another moment does not count.
+    """
+
+    if side not in {"left", "right"}:
+        raise ValueError("side must be 'left' or 'right'")
+    target = series.left_energy if side == "left" else series.right_energy
+    used = False
+    for index, timestamp in enumerate(series.timestamps_s):
+        energy = _nearest_repeater_energy(repeater_samples, timestamp, tolerance_s)
+        if energy > target[index]:
+            target[index] = energy
+            used = True
+    return used
+
+
+def _nearest_repeater_energy(
+    samples: list[tuple[float, float]],
+    timestamp_s: float,
+    tolerance_s: float,
+) -> float:
+    if not samples:
+        return 0.0
+    nearest_time, energy = min(samples, key=lambda item: abs(item[0] - timestamp_s))
+    if abs(nearest_time - timestamp_s) > tolerance_s:
+        return 0.0
+    return energy
+
+
+def repeater_amber_energy(frame: np.ndarray) -> float:
+    """Amber energy across the repeater view, which looks out to the side."""
+
+    if frame.size == 0:
+        return 0.0
+    height, width = frame.shape[:2]
+    if height < 8 or width < 8:
+        return 0.0
+    roi = frame[int(height * 0.2) : int(height * 0.9), int(width * 0.1) : int(width * 0.9)]
+    return _amber_energy(roi)
+
+
 def detect_turn_signal(series: SignalSeries, start_s: float, end_s: float) -> tuple[float, str]:
     values: list[float] = []
     for timestamp, left, right in zip(

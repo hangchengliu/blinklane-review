@@ -422,6 +422,7 @@ def run_analysis_job(job_id: str) -> None:
                 model_name=job["model_name"],
                 sample_rate_fps=job["sample_rate_fps"],
                 progress=progress,
+                repeater_paths=_repeater_paths(segment),
             )
             warnings.extend(analysis.warnings)
             replace_segment_events(job["session_id"], segment, analysis.events)
@@ -448,6 +449,21 @@ def run_analysis_job(job_id: str) -> None:
         if warnings:
             detail = f"{detail} Asset warnings: {_warning_text(warnings)}"
         fail_job(job_id, detail)
+
+
+def _repeater_paths(segment: dict[str, Any]) -> dict[str, Path]:
+    """Side cameras that share the front clip's filename clock."""
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT camera, path FROM video_segments
+            WHERE session_id = ? AND starts_at = ?
+              AND camera IN ('left_repeater', 'right_repeater')
+            """,
+            (segment["session_id"], segment["starts_at"]),
+        ).fetchall()
+    return {str(row["camera"]): Path(str(row["path"])) for row in rows}
 
 
 def replace_segment_events(

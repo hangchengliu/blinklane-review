@@ -32,6 +32,42 @@ def write_moving_car_clip(path: Path, *, amber: bool = False) -> None:
     writer.release()
 
 
+def write_blinking_repeater(path: Path) -> None:
+    """Side camera with amber pulses on the same timeline as the front clip."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), FPS, FRAME_SIZE)
+    if not writer.isOpened():
+        raise RuntimeError(f"Cannot write synthetic clip: {path}")
+    width, height = FRAME_SIZE
+    for index in range(FRAME_COUNT):
+        frame = np.full((height, width, 3), 12, dtype=np.uint8)
+        if index % 10 in (2, 4):
+            frame[:, :] = (0, 180, 255)
+        writer.write(frame)
+    writer.release()
+
+
+def write_lane_crossing_clip(path: Path) -> None:
+    """Static lane lines and a car that crosses the lane center."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), FPS, FRAME_SIZE)
+    if not writer.isOpened():
+        raise RuntimeError(f"Cannot write synthetic clip: {path}")
+    width, height = FRAME_SIZE
+    for index in range(FRAME_COUNT):
+        frame = np.full((height, width, 3), 24, dtype=np.uint8)
+        cv2.line(frame, (150, height - 1), (280, int(height * 0.42)), (230, 230, 230), 8)
+        cv2.line(frame, (490, height - 1), (360, int(height * 0.42)), (230, 230, 230), 8)
+        x = int(250 + (index // 2) * 6)
+        y2 = int(height * 0.84)
+        y1 = y2 - 70
+        cv2.rectangle(frame, (x - 28, y1), (x + 28, y2), (180, 70, 30), thickness=-1)
+        writer.write(frame)
+    writer.release()
+
+
 def write_dark_clip(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), FPS, FRAME_SIZE)
@@ -88,27 +124,31 @@ class _Result:
 
 
 class MovingCarDetector:
-    """Stand-in for YOLO.track. Boxes follow the synthetic car; no weights are loaded."""
+    """Stand-in for YOLO.track. Boxes follow a scripted path; no weights are loaded."""
 
-    def __init__(self) -> None:
+    def __init__(self, x0: float = 150, step_px: float = 12) -> None:
         self.calls = 0
+        self.x0 = x0
+        self.step_px = step_px
 
     def track(self, frame: np.ndarray, **_kwargs):
         height = frame.shape[0]
-        step = self.calls
+        x = self.x0 + self.calls * self.step_px
         self.calls += 1
-        x = 150 + step * 12
         y2 = int(height * 0.84)
         y1 = y2 - 80
         box = (float(x - 35), float(y1), float(x + 35), float(y2))
         return [_Result(box)]
 
 
-def install_fake_detector(monkeypatch) -> MovingCarDetector:
-    detector = MovingCarDetector()
+def install_fake_detector(
+    monkeypatch,
+    *,
+    x0: float = 150,
+    step_px: float = 12,
+) -> None:
     monkeypatch.setattr("backend.app.analysis.pipeline.yolo_available", lambda: True)
     monkeypatch.setattr(
         "backend.app.analysis.pipeline.build_model",
-        lambda _model_name: detector,
+        lambda _model_name: MovingCarDetector(x0=x0, step_px=step_px),
     )
-    return detector

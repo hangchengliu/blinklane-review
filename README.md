@@ -13,8 +13,8 @@ BlinkLane 是一个本地运行的行车视频复核工具。它读取 Tesla Das
 
 - Import Tesla Dashcam folders with `front`, `back`, `left_repeater`, and `right_repeater` clips.
 - Detect and track vehicles in front-camera footage with YOLO.
-- Estimate lane-change candidates from vehicle trajectory and lane/position movement.
-- Check side light regions for amber blinking patterns near the lane-change window.
+- Estimate lane-change candidates from vehicle trajectory. When lane lines are visible, the score uses position relative to those lines so the ego vehicle's own turn is less likely to be counted as another car changing lanes.
+- Check front-camera light regions and the time-aligned `left_repeater` / `right_repeater` clips for amber blinking near the lane-change window.
 - Let users review suspected events, add location/notes, and mark them as confirmed, dismissed, or pending.
 - Export a local evidence package with raw clip, annotated clip, key frame, `metadata.json`, `report.txt`, and zip.
 

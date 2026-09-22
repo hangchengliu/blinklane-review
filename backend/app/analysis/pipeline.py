@@ -11,7 +11,8 @@ import cv2
 from ..config import Settings, get_settings
 from ..tesla import new_id
 from ..video import create_annotated_clip, extract_raw_clip, grab_key_frame
-from .signals import signal_energy_from_frame
+from .lane import detect_lane_overlay, lane_reference_x
+from .signals import merge_aligned_repeater_energy, repeater_amber_energy, signal_energy_from_frame
 from .trajectory import detect_lane_change_events
 from .types import EventCandidate, SignalSeries, TrackSample
 
@@ -58,6 +59,7 @@ def analyze_segment(
     model_name: str,
     sample_rate_fps: float,
     progress: Callable[[float, str], None] | None = None,
+    repeater_paths: dict[str, Path] | None = None,
 ) -> SegmentAnalysis:
     if not yolo_available():
         raise RuntimeError(
@@ -75,6 +77,7 @@ def analyze_segment(
 
     samples: list[TrackSample] = []
     signal_series_by_track: dict[int, SignalSeries] = defaultdict(SignalSeries)
+    lane_center_by_timestamp: dict[float, float] = {}
     frame_index = 0
     processed = 0
     while cap.isOpened():
@@ -94,6 +97,11 @@ def analyze_segment(
             device=device,
             verbose=False,
         )[0]
+        timestamp_s = frame_index / fps
+        _overlay, lane_lines = detect_lane_overlay(frame)
+        lane_center = lane_reference_x(lane_lines, frame.shape[1], frame.shape[0])
+        if lane_center is not None:
+            lane_center_by_timestamp[timestamp_s] = lane_center
         if result.boxes is not None and result.boxes.is_track:
             boxes = result.boxes.xyxy.cpu().tolist()
             track_ids = result.boxes.id.int().cpu().tolist()
@@ -104,7 +112,7 @@ def analyze_segment(
                 sample = TrackSample(
                     track_id=int(track_id),
                     frame_index=frame_index,
-                    timestamp_s=frame_index / fps,
+                    timestamp_s=timestamp_s,
                     bbox_xyxy=tuple(float(value) for value in bbox),  # type: ignore[arg-type]
                     class_name=class_name,
                     frame_width=frame.shape[1],
@@ -124,12 +132,60 @@ def analyze_segment(
         frame_index += 1
     cap.release()
 
-    events = detect_lane_change_events(samples, signal_series_by_track)
-    settings = get_settings()
     warnings: list[str] = []
+    warnings.extend(_merge_repeater_signals(signal_series_by_track, repeater_paths or {}))
+    events = detect_lane_change_events(
+        samples,
+        signal_series_by_track,
+        lane_center_by_timestamp=lane_center_by_timestamp,
+    )
+    settings = get_settings()
     for event in events:
         warnings.extend(attach_event_assets(segment_id, video_path, event, settings))
     return SegmentAnalysis(events=events, warnings=warnings)
+
+
+def _merge_repeater_signals(
+    signal_series_by_track: dict[int, SignalSeries],
+    repeater_paths: dict[str, Path],
+) -> list[str]:
+    """Blend left/right repeater amber energy into each track at the same timestamps."""
+
+    warnings: list[str] = []
+    if not signal_series_by_track or not repeater_paths:
+        return warnings
+    timestamps = next(iter(signal_series_by_track.values())).timestamps_s
+    merged: dict[str, list[tuple[float, float]]] = {}
+    for camera, side in (("left_repeater", "left"), ("right_repeater", "right")):
+        path = repeater_paths.get(camera)
+        if path is None:
+            continue
+        try:
+            merged[side] = _read_repeater_energies(path, timestamps)
+        except Exception as exc:
+            warnings.append(f"{camera} failed: {exc}")
+    for series in signal_series_by_track.values():
+        for side, samples in merged.items():
+            merge_aligned_repeater_energy(series, samples, side=side)
+    return warnings
+
+
+def _read_repeater_energies(path: Path, timestamps: list[float]) -> list[tuple[float, float]]:
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open repeater video: {path}")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    samples: list[tuple[float, float]] = []
+    try:
+        for timestamp in timestamps:
+            frame_index = max(0, int(round(timestamp * fps)))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ok, frame = cap.read()
+            energy = repeater_amber_energy(frame) if ok and frame is not None else 0.0
+            samples.append((timestamp, energy))
+    finally:
+        cap.release()
+    return samples
 
 
 def attach_event_assets(

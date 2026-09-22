@@ -6,13 +6,18 @@ from statistics import median
 from .signals import detect_turn_signal
 from .types import EventCandidate, SignalSeries, TrackSample
 
+LATERAL_SHIFT_THRESHOLD = 0.12
+LANE_CROSS_BONUS = 0.15
+MIN_DURATION_S = 1.0
+
 
 def detect_lane_change_events(
     samples: list[TrackSample],
     signal_series_by_track: dict[int, SignalSeries] | None = None,
     *,
-    min_duration_s: float = 1.0,
-    lateral_shift_threshold: float = 0.12,
+    min_duration_s: float = MIN_DURATION_S,
+    lateral_shift_threshold: float = LATERAL_SHIFT_THRESHOLD,
+    lane_center_by_timestamp: dict[float, float] | None = None,
 ) -> list[EventCandidate]:
     by_track: dict[int, list[TrackSample]] = defaultdict(list)
     for sample in samples:
@@ -29,12 +34,12 @@ def detect_lane_change_events(
         if duration < min_duration_s:
             continue
 
-        first = track_samples[: max(2, len(track_samples) // 5)]
-        last = track_samples[-max(2, len(track_samples) // 5) :]
-        frame_width = max(1, track_samples[-1].frame_width)
-        first_x = median(sample.bottom_center[0] for sample in first)
-        last_x = median(sample.bottom_center[0] for sample in last)
-        shift_norm = abs(last_x - first_x) / frame_width
+        positions, lane_hits = _lateral_positions(track_samples, lane_center_by_timestamp)
+        group = max(2, len(track_samples) // 5)
+        first_pos = median(positions[:group])
+        last_pos = median(positions[-group:])
+        shift_norm = abs(last_pos - first_pos)
+        used_geometry = lane_hits >= len(track_samples) * 0.5
 
         lower_half_ratio = sum(
             1 for sample in track_samples if sample.bottom_center[1] > sample.frame_height * 0.45
@@ -43,6 +48,9 @@ def detect_lane_change_events(
             continue
 
         lane_change_score = min(1.0, (shift_norm - lateral_shift_threshold) / 0.22 + 0.35)
+        crossed = used_geometry and first_pos * last_pos < 0
+        if crossed:
+            lane_change_score = min(1.0, lane_change_score + LANE_CROSS_BONUS)
         start_s = max(0.0, track_samples[0].timestamp_s - 1.5)
         end_s = track_samples[-1].timestamp_s + 1.5
         key_s = track_samples[len(track_samples) // 2].timestamp_s
@@ -58,10 +66,14 @@ def detect_lane_change_events(
             confidence = round(confidence * 0.72, 3)
 
         labels = ["lane_change_candidate", signal_label]
-        if last_x > first_x:
+        if last_pos > first_pos:
             labels.append("moving_right")
         else:
             labels.append("moving_left")
+        if crossed:
+            labels.append("lane_geometry")
+        elif used_geometry:
+            labels.append("ego_motion_compensated")
 
         if signal_label == "turn_signal_observed":
             continue
@@ -82,6 +94,27 @@ def detect_lane_change_events(
         )
 
     return merge_overlapping_events(events)
+
+
+def _lateral_positions(
+    track_samples: list[TrackSample],
+    lane_center_by_timestamp: dict[float, float] | None,
+) -> tuple[list[float], int]:
+    """Normalized lateral position. Lane centers subtract ego-motion from the shift."""
+
+    positions: list[float] = []
+    lane_hits = 0
+    for sample in track_samples:
+        frame_width = max(1, sample.frame_width)
+        center = None if lane_center_by_timestamp is None else lane_center_by_timestamp.get(
+            sample.timestamp_s
+        )
+        if center is None:
+            positions.append(sample.bottom_center[0] / frame_width)
+            continue
+        lane_hits += 1
+        positions.append((sample.bottom_center[0] - center) / frame_width)
+    return positions, lane_hits
 
 
 def merge_overlapping_events(events: list[EventCandidate]) -> list[EventCandidate]:
