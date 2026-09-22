@@ -126,6 +126,12 @@ Tesla filenames look like `2026-05-25_18-30-02-front.mp4`. That clock is **local
 
 Importing the same folder again rescans it and updates segments. Running analysis again replaces events for the segments it analyzes. Jobs left `queued` or `running` when the process stops are marked failed on the next startup. Clip or key-frame failures are written into the job message instead of being stored as empty paths.
 
+## Evidence and upload / 证据包与上传
+
+A confirmed event exports a city-agnostic package: clip, screenshot, absolute time, place, plate, and confirm status. Upload goes through `submit(evidence) -> SubmissionResult`. That call accepts only events the user has confirmed. The default `LocalExportAdapter` leaves the zip on this machine. No city website is connected, and nothing is uploaded without that confirmation.
+
+已确认的事件会导出城市无关的证据包：片段、截图、绝对时间、地点、号牌、确认状态。上传接口是 `submit(evidence) -> SubmissionResult`，只接受人工确认过的事件。默认的 `LocalExportAdapter` 把压缩包留在本机。这里不连接任何城市网站，也不会在确认前上传。
+
 ## Project Status / 项目状态
 
 This repository is in **Public Preview**:

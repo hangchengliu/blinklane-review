@@ -13,10 +13,11 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .adapters import Evidence, get_upload_adapter
 from .analysis.pipeline import SegmentAnalysis, analyze_segment, yolo_available
 from .config import ensure_data_dirs, get_settings
 from .db import connect, init_db, row_to_dict, rows_to_dicts
-from .exporter import export_evidence_package
+from .exporter import evidence_fields, export_evidence_package
 from .schemas import AnalyzeRequest, HealthResponse, ImportRequest, ReviewRequest
 from .tesla import TeslaClipInfo, find_tesla_clips, new_id, probe_video
 from .video import ffmpeg_available
@@ -288,17 +289,25 @@ def update_review(event_id: str, payload: ReviewRequest) -> dict[str, Any]:
         conn.execute(
             """
             UPDATE events
-            SET review_status = ?, location = ?, note = ?
+            SET review_status = ?, location = ?, note = ?, plate = ?
             WHERE id = ?
             """,
-            (payload.review_status, payload.location, payload.note, event_id),
+            (payload.review_status, payload.location, payload.note, payload.plate, event_id),
         )
         conn.execute(
             """
-            INSERT INTO event_reviews (id, event_id, status, location, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO event_reviews (id, event_id, status, location, note, plate, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (review_id, event_id, payload.review_status, payload.location, payload.note, now),
+            (
+                review_id,
+                event_id,
+                payload.review_status,
+                payload.location,
+                payload.note,
+                payload.plate,
+                now,
+            ),
         )
         updated = row_to_dict(
             conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
@@ -326,6 +335,21 @@ def export_event(event_id: str) -> dict[str, Any]:
         if not segment:
             raise HTTPException(status_code=404, detail="Segment not found.")
         package_dir, zip_path = export_evidence_package(event, segment)
+        fields = evidence_fields(event, segment)
+        evidence = Evidence(
+            event_id=str(event["id"]),
+            clip=fields["clip"],
+            screenshot=fields["screenshot"],
+            absolute_time=fields["absolute_time"],
+            place=str(fields["place"]),
+            plate=str(fields["plate"]),
+            confirm_status=str(fields["confirm_status"]),
+            package_dir=str(package_dir),
+            zip_path=str(zip_path),
+        )
+        submission = get_upload_adapter().submit(evidence)
+        if not submission.ok:
+            raise HTTPException(status_code=400, detail=submission.message)
         export_id = new_id()
         conn.execute(
             "INSERT INTO exports (id, event_id, path, zip_path, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -337,6 +361,8 @@ def export_event(event_id: str) -> dict[str, Any]:
         "path": str(package_dir),
         "zip_path": str(zip_path),
         "download_url": f"/api/exports/{export_id}/download",
+        "adapter": submission.adapter,
+        "submission_message": submission.message,
     }
 
 

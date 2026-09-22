@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS events (
   review_status TEXT NOT NULL DEFAULT 'pending',
   location TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
+  plate TEXT NOT NULL DEFAULT '',
   raw_clip_path TEXT,
   annotated_clip_path TEXT,
   key_frame_path TEXT,
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS event_reviews (
   status TEXT NOT NULL,
   location TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
+  plate TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -130,6 +132,18 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 def init_db(db_path: Path | None = None) -> None:
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    _add_column(conn, "events", "plate", "TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "event_reviews", "plate", "TEXT NOT NULL DEFAULT ''")
+
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

@@ -129,11 +129,11 @@ export function App() {
     }
   }
 
-  async function handleReview(status: ReviewStatus, location: string, note: string) {
+  async function handleReview(status: ReviewStatus, location: string, note: string, plate: string) {
     if (!selected) return;
     setError("");
     try {
-      const updated = await api.review(selected.id, status, location, note);
+      const updated = await api.review(selected.id, status, location, note, plate);
       setEvents((items) => items.map((item) => (item.id === updated.id ? updated : item)));
       setSelectedId(updated.id);
       setExportResult(null);
@@ -324,16 +324,18 @@ function ReviewPanel({
   exportResult
 }: {
   event: EventItem | null;
-  onReview: (status: ReviewStatus, location: string, note: string) => void;
+  onReview: (status: ReviewStatus, location: string, note: string, plate: string) => void;
   onExport: () => void;
   exportResult: ExportResponse | null;
 }) {
   const [location, setLocation] = useState("");
   const [note, setNote] = useState("");
+  const [plate, setPlate] = useState("");
 
   useEffect(() => {
     setLocation(event?.location || "");
     setNote(event?.note || "");
+    setPlate(event?.plate || "");
   }, [event?.id]);
 
   if (!event) {
@@ -399,17 +401,21 @@ function ReviewPanel({
         <input value={location} onChange={(evt) => setLocation(evt.target.value)} placeholder="道路、方向、附近参照物" />
       </label>
       <label className="field">
+        <span>号牌</span>
+        <input value={plate} onChange={(evt) => setPlate(evt.target.value)} placeholder="选填，人工填写" />
+      </label>
+      <label className="field">
         <span>备注</span>
-        <textarea value={note} onChange={(evt) => setNote(evt.target.value)} placeholder="车牌、车道、现场情况" />
+        <textarea value={note} onChange={(evt) => setNote(evt.target.value)} placeholder="车道、现场情况" />
       </label>
 
       <div className="actions">
-        <button onClick={() => onReview("confirmed", location, note)}>
+        <button onClick={() => onReview("confirmed", location, note, plate)}>
           <CheckCircle2 size={18} />
           确认
         </button>
-        <button onClick={() => onReview("pending", location, note)}>待定</button>
-        <button className="secondary" onClick={() => onReview("dismissed", location, note)}>
+        <button onClick={() => onReview("pending", location, note, plate)}>待定</button>
+        <button className="secondary" onClick={() => onReview("dismissed", location, note, plate)}>
           <XCircle size={18} />
           排除
         </button>
@@ -422,6 +428,7 @@ function ReviewPanel({
       {exportResult && (
         <a className="download" href={exportResult.download_url}>
           下载 {exportResult.zip_path.split("/").pop()}
+          {exportResult.submission_message ? ` · ${exportResult.submission_message}` : ""}
         </a>
       )}
     </section>

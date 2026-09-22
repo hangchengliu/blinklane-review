@@ -21,6 +21,7 @@ class ReviewRequest(BaseModel):
     review_status: ReviewStatus
     location: str = ""
     note: str = ""
+    plate: str = ""
 
 
 class HealthResponse(BaseModel):

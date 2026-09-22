@@ -45,10 +45,10 @@ export const api = {
   job: (jobId: string) => request<Job>(`/api/jobs/${jobId}`),
   events: (sessionId?: string) =>
     request<EventItem[]>(sessionId ? `/api/events?session_id=${sessionId}` : "/api/events"),
-  review: (eventId: string, reviewStatus: ReviewStatus, location: string, note: string) =>
+  review: (eventId: string, reviewStatus: ReviewStatus, location: string, note: string, plate: string) =>
     request<EventItem>(`/api/events/${eventId}/review`, {
       method: "PATCH",
-      body: JSON.stringify({ review_status: reviewStatus, location, note })
+      body: JSON.stringify({ review_status: reviewStatus, location, note, plate })
     }),
   exportEvent: (eventId: string) =>
     request<ExportResponse>(`/api/events/${eventId}/export`, { method: "POST" })

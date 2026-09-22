@@ -12,7 +12,7 @@ BlinkLane has two local parts:
 3. User starts analysis.
 4. Backend analyzes front-camera clips, tracks vehicles, scores lane-change and turn-signal evidence.
 5. Frontend displays suspected events for manual review.
-6. Confirmed events can be exported as a local evidence package.
+6. Confirmed events can be exported as a local evidence package. `LocalExportAdapter.submit` accepts only those confirmed events. City-specific adapters are not part of this build.
 
 ## Storage
 

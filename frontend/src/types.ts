@@ -80,6 +80,7 @@ export interface EventItem {
   review_status: ReviewStatus;
   location: string;
   note: string;
+  plate: string;
   raw_clip_url?: string | null;
   annotated_clip_url?: string | null;
   key_frame_url?: string | null;
@@ -91,4 +92,6 @@ export interface ExportResponse {
   path: string;
   zip_path: string;
   download_url: string;
+  adapter?: string;
+  submission_message?: string;
 }

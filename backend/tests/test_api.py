@@ -86,12 +86,18 @@ def test_review_and_export_confirmed_event(monkeypatch, tmp_path: Path) -> None:
     client = TestClient(app)
     review = client.patch(
         f"/api/events/{event_id}/review",
-        json={"review_status": "confirmed", "location": "测试路段", "note": "确认"},
+        json={
+            "review_status": "confirmed",
+            "location": "测试路段",
+            "note": "确认",
+            "plate": "FIXTURE1",
+        },
     )
     exported = client.post(f"/api/events/{event_id}/export")
 
     assert review.status_code == 200
     assert review.json()["review_status"] == "confirmed"
+    assert review.json()["plate"] == "FIXTURE1"
     assert exported.status_code == 200
     assert exported.json()["download_url"].startswith("/api/exports/")
 
