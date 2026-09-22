@@ -1,13 +1,8 @@
 # BlinkLane / 变道灯光复核助手
 
-**Public Preview v0.1.0**  
-Local Tesla Dashcam reviewer for detecting suspected lane changes without an observed turn signal.
+这是一个公益项目：工具被用得越广，真实的道路才越安全。BlinkLane 在你自己的电脑上复核 Tesla 行车记录，标出变道时没有观察到转向灯的片段；由人确认之后，证据包留在这台机器上。它不认定某件事违法，不自动举报，默认不上传，也与 Tesla 或警方无关。以 AGPL-3.0-only 发布，别人可以运行，也可以再分享。
 
-BlinkLane 是一个本地运行的行车视频复核工具。它读取 Tesla Dashcam 文件夹，使用 YOLO 和车辆轨迹分析找出“疑似变道但未观察到转向灯”的片段，并生成可人工复核的证据包。
-
-> Public Preview notice: this is an early testing build. It is useful for experiments and manual review, but it does not make legal conclusions and should not be used as an automated enforcement system.
->
-> 公开预览版说明：这是早期测试版，只做辅助发现和人工复核，不自动举报、不自动认定违法。
+A local tool for safer roads (AGPL-3.0-only): review Tesla dashcam clips for lane changes with no observed turn signal, confirm them yourself, and keep the evidence package on the machine.
 
 ## What It Does / 功能
 
