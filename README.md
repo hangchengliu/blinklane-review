@@ -36,6 +36,17 @@ python -m pip install -e ".[dev,yolo]"
 npm install
 ```
 
+Install sets:
+
+| Extra | What you get | When |
+| --- | --- | --- |
+| (none) | FastAPI and OpenCV | API only |
+| `.[dev]` | pytest, httpx, ruff | CI and tests. Does not install YOLO or download weights |
+| `.[yolo]` | `ultralytics>=8.4`, `torch>=2.5` | Detection |
+| `.[dev,yolo]` | both extras | Local full setup |
+
+The default weight file name is `yolo26s.pt`. Ultralytics downloads it on first analysis. CI mocks the detector and must not download those weights.
+
 Optional but recommended for reliable video clipping:
 
 ```bash
@@ -87,10 +98,23 @@ npm run build
 Data and generated artifacts stay local under:
 
 ```text
-.vcy_data/
+.blinklane_data/
 ```
 
-The default model is `yolo26s.pt`. Model weights are downloaded locally by Ultralytics and are not committed to the repository.
+The database file there is `blinklane.sqlite3`.
+
+### Names and clock / 命名与时间
+
+Older builds used `.vcy_data/`, `vcy.sqlite3`, and `VCY_*` environment variables. Those still work:
+
+- `BLINKLANE_DATA_DIR` sets the data directory. If it is unset and `VCY_DATA_DIR` is set, the legacy directory is used and the database stays `vcy.sqlite3`.
+- If neither variable is set, an existing `.vcy_data` directory is kept when `.blinklane_data` does not exist yet. Otherwise the default is `.blinklane_data`.
+- `BLINKLANE_MODEL_NAME` (legacy `VCY_MODEL_NAME`) defaults to `yolo26s.pt`.
+- `BLINKLANE_SAMPLE_RATE_FPS` (legacy `VCY_SAMPLE_RATE_FPS`) defaults to `5`.
+
+Tesla filenames look like `2026-05-25_18-30-02-front.mp4`. That clock is **local wall time**, not UTC. `BLINKLANE_CLOCK_OFFSET_MINUTES` (legacy `VCY_CLOCK_OFFSET_MINUTES`, default `0`) is added to the filename clock when a folder is imported. Evidence reports include the resulting absolute time.
+
+Importing the same folder again rescans it and updates segments. Running analysis again replaces events for the segments it analyzes. Jobs left `queued` or `running` when the process stops are marked failed on the next startup. Clip or key-frame failures are written into the job message instead of being stored as empty paths.
 
 ## Project Status / 项目状态
 

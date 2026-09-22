@@ -53,27 +53,20 @@ def grab_key_frame(
     cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(timestamp_s * fps)))
     ok, frame = cap.read()
     cap.release()
-    if not ok:
-        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
-        cv2.putText(
-            frame,
-            "Frame unavailable",
-            (50, 80),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (255, 255, 255),
-            2,
-        )
+    if not ok or frame is None:
+        raise RuntimeError(f"Cannot read key frame at {timestamp_s:.3f}s from {source}")
     if sample:
         draw_sample(frame, sample, "key frame")
-    cv2.imwrite(str(out_path), frame)
+    if not cv2.imwrite(str(out_path), frame):
+        raise RuntimeError(f"Cannot write key frame: {out_path}")
 
 
 def create_annotated_clip(source: Path, event: EventCandidate, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(source))
     if not cap.isOpened():
-        return
+        cap.release()
+        raise RuntimeError(f"Cannot open video: {source}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
@@ -89,6 +82,7 @@ def create_annotated_clip(source: Path, event: EventCandidate, out_path: Path) -
     )
     samples_by_frame = {sample.frame_index: sample for sample in event.samples}
     frame_index = start_frame
+    written = 0
     while frame_index <= end_frame:
         ok, frame = cap.read()
         if not ok:
@@ -105,9 +99,12 @@ def create_annotated_clip(source: Path, event: EventCandidate, out_path: Path) -
         )
         cv2.putText(frame, label, (24, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         writer.write(frame)
+        written += 1
         frame_index += 1
     writer.release()
     cap.release()
+    if written == 0:
+        raise RuntimeError(f"No frames written for annotated clip: {source}")
 
 
 def draw_sample(frame: np.ndarray, sample: TrackSample, label: str) -> None:
@@ -135,14 +132,18 @@ def _extract_clip_with_opencv(source: Path, start_s: float, end_s: float, out_pa
     writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     current_frame = int(start_s * fps)
     end_frame = int(end_s * fps)
+    written = 0
     while current_frame <= end_frame:
         ok, frame = cap.read()
         if not ok:
             break
         writer.write(frame)
+        written += 1
         current_frame += 1
     writer.release()
     cap.release()
+    if written == 0:
+        raise RuntimeError(f"No frames written for raw clip: {source}")
 
 
 def _nearest_sample(

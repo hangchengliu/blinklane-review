@@ -3,11 +3,12 @@ from __future__ import annotations
 import importlib.util
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 
-from ..config import get_settings
+from ..config import Settings, get_settings
 from ..tesla import new_id
 from ..video import create_annotated_clip, extract_raw_clip, grab_key_frame
 from .signals import signal_energy_from_frame
@@ -17,18 +18,36 @@ from .types import EventCandidate, SignalSeries, TrackSample
 VEHICLE_CLASS_IDS = [2, 3, 5, 7]
 
 
+@dataclass
+class SegmentAnalysis:
+    events: list[EventCandidate]
+    warnings: list[str]
+
+
 def yolo_available() -> bool:
     return importlib.util.find_spec("ultralytics") is not None
 
 
+def build_model(model_name: str):
+    from ultralytics import YOLO
+
+    return YOLO(model_name)
+
+
 def choose_torch_device() -> str:
+    """Prefer CUDA, then Apple MPS, then CPU."""
+
     try:
         import torch
-
-        if torch.backends.mps.is_available():
-            return "mps"
     except Exception:
         return "cpu"
+    cuda = getattr(torch, "cuda", None)
+    if cuda is not None and cuda.is_available():
+        return "cuda"
+    backends = getattr(torch, "backends", None)
+    mps = getattr(backends, "mps", None) if backends is not None else None
+    if mps is not None and mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -39,13 +58,11 @@ def analyze_segment(
     model_name: str,
     sample_rate_fps: float,
     progress: Callable[[float, str], None] | None = None,
-) -> list[EventCandidate]:
+) -> SegmentAnalysis:
     if not yolo_available():
         raise RuntimeError(
             "Ultralytics YOLO is not installed. Run: python -m pip install -e '.[yolo]'"
         )
-
-    from ultralytics import YOLO
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -53,7 +70,7 @@ def analyze_segment(
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     frame_step = max(1, int(round(fps / sample_rate_fps)))
-    model = YOLO(model_name)
+    model = build_model(model_name)
     device = choose_torch_device()
 
     samples: list[TrackSample] = []
@@ -109,30 +126,50 @@ def analyze_segment(
 
     events = detect_lane_change_events(samples, signal_series_by_track)
     settings = get_settings()
+    warnings: list[str] = []
     for event in events:
-        asset_stem = f"{segment_id}_{event.track_id}_{new_id()[:8]}"
-        raw_path = settings.data_dir / "clips" / f"{asset_stem}_raw.mp4"
-        annotated_path = settings.data_dir / "annotated" / f"{asset_stem}_annotated.mp4"
-        key_path = settings.data_dir / "keys" / f"{asset_stem}_key.jpg"
-        target_sample = _nearest_sample_by_time(event.samples, event.key_s)
+        warnings.extend(attach_event_assets(segment_id, video_path, event, settings))
+    return SegmentAnalysis(events=events, warnings=warnings)
+
+
+def attach_event_assets(
+    segment_id: str,
+    video_path: Path,
+    event: EventCandidate,
+    settings: Settings | None = None,
+) -> list[str]:
+    """Write clip and key-frame files. Failures become warnings, not empty paths."""
+
+    settings = settings or get_settings()
+    warnings: list[str] = []
+    asset_stem = f"{segment_id}_{event.track_id}_{new_id()[:8]}"
+    raw_path = settings.data_dir / "clips" / f"{asset_stem}_raw.mp4"
+    annotated_path = settings.data_dir / "annotated" / f"{asset_stem}_annotated.mp4"
+    key_path = settings.data_dir / "keys" / f"{asset_stem}_key.jpg"
+    target_sample = _nearest_sample_by_time(event.samples, event.key_s)
+
+    def write_raw(path: Path) -> None:
+        extract_raw_clip(video_path, event.start_s, event.end_s, path)
+
+    def write_annotated(path: Path) -> None:
+        create_annotated_clip(video_path, event, path)
+
+    def write_key(path: Path) -> None:
+        grab_key_frame(video_path, event.key_s, path, target_sample)
+
+    writers = (
+        ("raw_clip", raw_path, write_raw),
+        ("annotated_clip", annotated_path, write_annotated),
+        ("key_frame", key_path, write_key),
+    )
+    for label, path, writer in writers:
         try:
-            extract_raw_clip(video_path, event.start_s, event.end_s, raw_path)
-        except Exception:
-            raw_path = Path()
-        try:
-            create_annotated_clip(video_path, event, annotated_path)
-        except Exception:
-            annotated_path = Path()
-        try:
-            grab_key_frame(video_path, event.key_s, key_path, target_sample)
-        except Exception:
-            key_path = Path()
-        event.reason_labels.append(f"raw_clip={raw_path}" if raw_path else "raw_clip_unavailable")
-        event.reason_labels.append(
-            f"annotated_clip={annotated_path}" if annotated_path else "annotated_clip_unavailable"
-        )
-        event.reason_labels.append(f"key_frame={key_path}" if key_path else "key_frame_unavailable")
-    return events
+            writer(path)
+        except Exception as exc:
+            warnings.append(f"{label} failed for track {event.track_id}: {exc}")
+            continue
+        event.reason_labels.append(f"{label}={path}")
+    return warnings
 
 
 def _nearest_sample_by_time(samples: list[TrackSample], timestamp_s: float) -> TrackSample | None:

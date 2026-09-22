@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import cv2
+
+from .config import get_settings
 
 TESLA_FILENAME_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{2}-\d{2}-\d{2})-"
@@ -37,13 +39,28 @@ class VideoProbe:
     height: int | None
 
 
-def parse_tesla_filename(path: str | Path) -> TeslaClipInfo | None:
+def parse_tesla_filename(
+    path: str | Path,
+    *,
+    offset_minutes: float | None = None,
+) -> TeslaClipInfo | None:
+    """Parse a Tesla Dashcam name.
+
+    The clock in the filename is local wall time. It is not UTC. Optional
+    ``offset_minutes`` (or ``BLINKLANE_CLOCK_OFFSET_MINUTES``) is added to
+    that clock. The returned datetime stays naive.
+    """
+
     file_path = Path(path)
     match = TESLA_FILENAME_RE.match(file_path.name)
     if not match:
         return None
     raw = f"{match.group('date')} {match.group('time').replace('-', ':')}"
-    starts_at = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+    starts_at = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+    if offset_minutes is None:
+        offset_minutes = get_settings().clock_offset_minutes
+    if offset_minutes:
+        starts_at += timedelta(minutes=offset_minutes)
     return TeslaClipInfo(path=file_path, camera=match.group("camera").lower(), starts_at=starts_at)
 
 

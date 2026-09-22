@@ -17,6 +17,12 @@ dependencies = [
   "python-multipart>=0.0.9",
 ]
 
+# Installable extras:
+#   .[dev]  — pytest, httpx, ruff. CI installs this set and does not download weights.
+#   .[yolo] — ultralytics>=8.4 and torch>=2.5. Default weight file name is yolo26s.pt
+#             (BLINKLANE_MODEL_NAME in backend/app/config.py). Do not fetch it in CI.
+#   .[dev,yolo] — local full setup.
+
 [project.optional-dependencies]
 dev = [
   "httpx>=0.27.0",

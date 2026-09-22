@@ -16,4 +16,7 @@ BlinkLane has two local parts:
 
 ## Storage
 
-All local artifacts are written under `.vcy_data/` by default.
+All local artifacts are written under `.blinklane_data/` by default
+(`blinklane.sqlite3`). If `VCY_DATA_DIR` is set, or `.vcy_data` already exists
+and `.blinklane_data` does not, BlinkLane keeps using that legacy directory and
+`vcy.sqlite3`.

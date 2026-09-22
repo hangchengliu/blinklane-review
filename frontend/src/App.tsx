@@ -32,10 +32,14 @@ export function App() {
   useEffect(() => {
     if (!job || (job.status !== "queued" && job.status !== "running")) return;
     const timer = window.setInterval(async () => {
-      const fresh = await api.job(job.id);
-      setJob(fresh);
-      if (fresh.status === "completed") {
-        await refreshEvents(fresh.session_id);
+      try {
+        const fresh = await api.job(job.id);
+        setJob(fresh);
+        if (fresh.status === "completed") {
+          await refreshEvents(fresh.session_id);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "任务状态获取失败");
       }
     }, 1200);
     return () => window.clearInterval(timer);
@@ -51,6 +55,7 @@ export function App() {
   async function handleImport() {
     setError("");
     setBusy(true);
+    setJob(null);
     try {
       const result = await api.importFolder(folderPath.trim());
       setImportResult(result);
