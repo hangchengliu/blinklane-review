@@ -95,6 +95,8 @@ python -m ruff check .
 npm run build
 ```
 
+`backend/tests/test_e2e_fixture.py` walks import → analyze → confirm → zip with synthetic clips and a mocked detector. It does not download YOLO weights and does not use real Tesla footage. Later detection changes should keep that event list comparable.
+
 Data and generated artifacts stay local under:
 
 ```text
