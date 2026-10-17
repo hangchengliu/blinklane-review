@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
+import logging
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -19,11 +20,13 @@ from .config import ensure_data_dirs, get_settings
 from .db import connect, init_db, row_to_dict, rows_to_dicts
 from .exporter import evidence_fields, export_evidence_package
 from .schemas import AnalyzeRequest, HealthResponse, ImportRequest, ReviewRequest
-from .tesla import TeslaClipInfo, find_tesla_clips, new_id, probe_video
+from .tesla import TeslaClipInfo, VideoProbe, find_tesla_clips, new_id, probe_video
 from .video import ffmpeg_available
 from .volumes import scan_and_import, volume_snapshot
 
 INTERRUPTED_JOB_MESSAGE = "Interrupted before completion; marked failed on startup."
+
+logger = logging.getLogger(__name__)
 
 
 async def _volume_scan_loop(stop: asyncio.Event) -> None:
@@ -33,7 +36,7 @@ async def _volume_scan_loop(stop: asyncio.Event) -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            pass
+            logger.exception("Volume scan pass failed")
         if stop.is_set():
             return
         try:
@@ -46,6 +49,7 @@ async def _volume_scan_loop(stop: asyncio.Event) -> None:
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     ensure_data_dirs()
     init_db()
+    logger.info("BlinkLane data directory: %s", get_settings().data_dir)
     fail_interrupted_jobs()
     stop = asyncio.Event()
     scanner: asyncio.Task[None] | None = None
@@ -79,17 +83,17 @@ app.add_middleware(
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     settings = get_settings()
-    cv2_available = importlib.util.find_spec("cv2") is not None
+    has_ffmpeg = ffmpeg_available()
+    has_yolo = yolo_available()
     messages: list[str] = []
-    if not ffmpeg_available():
+    if not has_ffmpeg:
         messages.append("ffmpeg 未安装：可分析，但导出原始片段会使用较慢的 OpenCV 兜底。")
-    if not yolo_available():
+    if not has_yolo:
         messages.append("Ultralytics YOLO 未安装：请运行 python -m pip install -e '.[yolo]'。")
     return HealthResponse(
-        ok=cv2_available,
-        ffmpeg_available=ffmpeg_available(),
-        yolo_available=yolo_available(),
-        cv2_available=cv2_available,
+        ok=True,
+        ffmpeg_available=has_ffmpeg,
+        yolo_available=has_yolo,
         data_dir=str(settings.data_dir),
         messages=messages,
     )
@@ -119,20 +123,38 @@ def import_folder_path(folder: Path) -> dict[str, Any]:
             "SELECT * FROM sessions WHERE folder_path = ?",
             (str(folder),),
         ).fetchone()
-        if existing is None and not clips:
-            raise HTTPException(status_code=400, detail="No Tesla Dashcam MP4 files found.")
         if existing is None:
+            if not clips:
+                raise HTTPException(status_code=400, detail="No Tesla Dashcam MP4 files found.")
             session_id = new_id()
-            conn.execute(
-                "INSERT INTO sessions (id, folder_path, created_at) VALUES (?, ?, ?)",
+            cursor = conn.execute(
+                """
+                INSERT INTO sessions (id, folder_path, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(folder_path) DO NOTHING
+                """,
                 (session_id, str(folder), now),
             )
-            _insert_segments(conn, session_id, clips, now)
-            reused = False
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE folder_path = ?",
+                (str(folder),),
+            ).fetchone()
+            session_id = str(row["id"])
+            if cursor.rowcount:
+                _insert_segments(conn, session_id, clips, now)
+                reused = False
+            else:
+                # Another request created the session first; treat it as existing.
+                changed = _sync_segments(conn, session_id, clips, now)
+                reused = not changed
         else:
             session_id = str(existing["id"])
-            changed = _sync_segments(conn, session_id, clips, now)
-            reused = not changed
+            if clips:
+                changed = _sync_segments(conn, session_id, clips, now)
+                reused = not changed
+            else:
+                # A rescan that finds zero clips must not wipe an existing session.
+                reused = True
 
         session = row_to_dict(
             conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
@@ -151,8 +173,32 @@ def _insert_segments(conn: Any, session_id: str, clips: list[TeslaClipInfo], now
         _insert_segment(conn, session_id, clip, now)
 
 
+_probe_cache: dict[str, tuple[tuple[int, int] | None, VideoProbe]] = {}
+
+
+def _probe_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (int(stat.st_mtime), stat.st_size)
+
+
+def _probe_clip(path: Path) -> tuple[VideoProbe, bool]:
+    """Probe a clip, reusing the last result while path+mtime+size are unchanged."""
+
+    key = str(path)
+    signature = _probe_signature(path)
+    cached = _probe_cache.get(key)
+    if cached is not None and cached[0] == signature:
+        return cached[1], True
+    probe = probe_video(path)
+    _probe_cache[key] = (signature, probe)
+    return probe, False
+
+
 def _insert_segment(conn: Any, session_id: str, clip: TeslaClipInfo, now: str) -> None:
-    probe = probe_video(clip.path)
+    probe, _ = _probe_clip(clip.path)
     conn.execute(
         """
         INSERT INTO video_segments (
@@ -190,7 +236,6 @@ def _sync_segments(conn: Any, session_id: str, clips: list[TeslaClipInfo], now: 
         path = str(clip.path)
         seen.add(path)
         starts_at = clip.starts_at.isoformat()
-        probe = probe_video(clip.path)
         current = by_path.get(path)
         if current is None:
             changed = True
@@ -198,6 +243,10 @@ def _sync_segments(conn: Any, session_id: str, clips: list[TeslaClipInfo], now: 
             continue
         if current["camera"] != clip.camera or current["starts_at"] != starts_at:
             changed = True
+        probe, from_cache = _probe_clip(clip.path)
+        if from_cache:
+            # Path, mtime, and size are unchanged; skip the redundant probe/update.
+            continue
         conn.execute(
             """
             UPDATE video_segments
@@ -216,6 +265,13 @@ def _sync_segments(conn: Any, session_id: str, clips: list[TeslaClipInfo], now: 
         )
     for path, row in by_path.items():
         if path not in seen:
+            has_events = conn.execute(
+                "SELECT 1 FROM events WHERE segment_id = ? LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            if has_events is not None:
+                # Keep the segment row so its events, reviews, and exports survive.
+                continue
             changed = True
             conn.execute("DELETE FROM video_segments WHERE id = ?", (row["id"],))
     return changed
@@ -235,6 +291,19 @@ def analyze(payload: AnalyzeRequest, background_tasks: BackgroundTasks) -> dict[
         ).fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="Session not found.")
+        active = conn.execute(
+            """
+            SELECT id FROM analysis_jobs
+            WHERE session_id = ? AND status IN ('queued', 'running')
+            LIMIT 1
+            """,
+            (payload.session_id,),
+        ).fetchone()
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="An analysis job is already queued or running for this session.",
+            )
         conn.execute(
             """
             INSERT INTO analysis_jobs (
@@ -275,7 +344,8 @@ def list_events(session_id: str | None = None) -> list[dict[str, Any]]:
     query += " ORDER BY confidence DESC, created_at DESC"
     with connect() as conn:
         events = rows_to_dicts(conn.execute(query, params).fetchall())
-    return [with_media_urls(event) for event in events]
+        context = _load_repeater_context(conn)
+    return [with_media_urls(event, context) for event in events]
 
 
 @app.patch("/api/events/{event_id}/review")
@@ -312,9 +382,15 @@ def update_review(event_id: str, payload: ReviewRequest) -> dict[str, Any]:
         updated = row_to_dict(
             conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
         )
-        response = with_media_urls(updated or {})
-        if payload.review_status == "confirmed" and updated:
-            response.update(_export_confirmed_event(conn, updated, now))
+        context = _load_repeater_context(conn)
+    response = with_media_urls(updated or {}, context)
+    if payload.review_status == "confirmed" and updated:
+        try:
+            # The review is already committed; export runs outside the transaction.
+            response["export"] = _export_confirmed_event(updated, now)
+        except Exception as exc:
+            logger.exception("Export failed for event %s", event_id)
+            response["export_error"] = getattr(exc, "detail", None) or str(exc)
     return response
 
 
@@ -329,8 +405,7 @@ def export_event(event_id: str) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail="Event not found.")
         if event["review_status"] != "confirmed":
             raise HTTPException(status_code=400, detail="Only confirmed events can be exported.")
-        exported = _export_confirmed_event(conn, event, now)
-    return exported
+    return _export_confirmed_event(event, now)
 
 
 @app.get("/api/exports/{export_id}/download")
@@ -354,7 +429,35 @@ def media_source(path: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Media not found.")
     if target.suffix.lower() != ".mp4":
         raise HTTPException(status_code=403, detail="Invalid media type.")
+    if not _is_registered_media(target):
+        raise HTTPException(status_code=403, detail="Media path is not registered.")
     return FileResponse(target)
+
+
+def _is_registered_media(target: Path) -> bool:
+    """Only serve absolute paths that import/analysis registered in the DB."""
+
+    resolved = str(target)
+    try:
+        with connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM video_segments WHERE path = ? LIMIT 1",
+                (resolved,),
+            ).fetchone() is not None:
+                return True
+            return (
+                conn.execute(
+                    """
+                    SELECT 1 FROM events
+                    WHERE raw_clip_path = ? OR annotated_clip_path = ?
+                    LIMIT 1
+                    """,
+                    (resolved, resolved),
+                ).fetchone()
+                is not None
+            )
+    except sqlite3.OperationalError:
+        return False
 
 
 @app.get("/api/media/{path:path}")
@@ -478,8 +581,13 @@ def replace_segment_events(
 
     now = datetime.now(UTC).isoformat()
     with connect() as conn:
+        # Only pending events are replaced; confirmed/dismissed events keep
+        # their reviews and exports across a re-analysis.
         conn.execute(
-            "DELETE FROM events WHERE session_id = ? AND segment_id = ?",
+            """
+            DELETE FROM events
+            WHERE session_id = ? AND segment_id = ? AND review_status = 'pending'
+            """,
             (session_id, segment["id"]),
         )
         for candidate in candidates:
@@ -577,32 +685,35 @@ def _media_url_for_path(path: str | None, *, data_dir: Path) -> str | None:
     return f"/api/media/source?path={target.resolve().as_posix()}"
 
 
-def _attach_repeater_urls(event: dict[str, Any]) -> None:
+def _load_repeater_context(conn: Any) -> dict[str, Any]:
+    """Segment starts and repeater paths fetched once per request."""
+
+    segments = {
+        str(row["id"]): (str(row["session_id"]), str(row["starts_at"]))
+        for row in conn.execute("SELECT id, session_id, starts_at FROM video_segments")
+    }
+    repeaters: dict[tuple[str, str], dict[str, str]] = {}
+    rows = conn.execute(
+        """
+        SELECT session_id, starts_at, camera, path FROM video_segments
+        WHERE camera IN ('left_repeater', 'right_repeater')
+        """
+    ).fetchall()
+    for row in rows:
+        key = (str(row["session_id"]), str(row["starts_at"]))
+        repeaters.setdefault(key, {})[str(row["camera"])] = str(row["path"])
+    return {"segments": segments, "repeaters": repeaters}
+
+
+def _attach_repeater_urls(event: dict[str, Any], context: dict[str, Any]) -> None:
     segment_id = event.get("segment_id")
-    session_id = event.get("session_id")
-    if not segment_id or not session_id:
+    segment_ref = context["segments"].get(str(segment_id)) if segment_id else None
+    if segment_ref is None:
         event["left_repeater_url"] = None
         event["right_repeater_url"] = None
         return
     settings = get_settings()
-    with connect() as conn:
-        segment = conn.execute(
-            "SELECT starts_at FROM video_segments WHERE id = ?",
-            (segment_id,),
-        ).fetchone()
-        if segment is None:
-            event["left_repeater_url"] = None
-            event["right_repeater_url"] = None
-            return
-        rows = conn.execute(
-            """
-            SELECT camera, path FROM video_segments
-            WHERE session_id = ? AND starts_at = ?
-              AND camera IN ('left_repeater', 'right_repeater')
-            """,
-            (session_id, segment["starts_at"]),
-        ).fetchall()
-        by_camera = {str(row["camera"]): str(row["path"]) for row in rows}
+    by_camera = context["repeaters"].get(segment_ref, {})
     event["left_repeater_url"] = _media_url_for_path(
         by_camera.get("left_repeater"), data_dir=settings.data_dir
     )
@@ -611,7 +722,10 @@ def _attach_repeater_urls(event: dict[str, Any]) -> None:
     )
 
 
-def with_media_urls(event: dict[str, Any]) -> dict[str, Any]:
+def with_media_urls(
+    event: dict[str, Any],
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     settings = get_settings()
     for key, url_key in (
         ("raw_clip_path", "raw_clip_url"),
@@ -619,20 +733,40 @@ def with_media_urls(event: dict[str, Any]) -> dict[str, Any]:
         ("key_frame_path", "key_frame_url"),
     ):
         event[url_key] = _media_url_for_path(event.get(key), data_dir=settings.data_dir)
-    _attach_repeater_urls(event)
+    if context is None:
+        with connect() as conn:
+            context = _load_repeater_context(conn)
+    _attach_repeater_urls(event, context)
     return event
 
 
-def _export_confirmed_event(conn: Any, event: dict[str, Any], now: str) -> dict[str, Any]:
-    segment = row_to_dict(
-        conn.execute(
-            "SELECT * FROM video_segments WHERE id = ?",
-            (event["segment_id"],),
+def _export_confirmed_event(event: dict[str, Any], now: str) -> dict[str, Any]:
+    with connect() as conn:
+        segment = row_to_dict(
+            conn.execute(
+                "SELECT * FROM video_segments WHERE id = ?",
+                (event["segment_id"],),
+            ).fetchone()
+        )
+        if not segment:
+            raise HTTPException(status_code=404, detail="Segment not found.")
+        latest = conn.execute(
+            """
+            SELECT id, path FROM exports
+            WHERE event_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (event["id"],),
         ).fetchone()
-    )
-    if not segment:
-        raise HTTPException(status_code=404, detail="Segment not found.")
-    package_dir, zip_path = export_evidence_package(event, segment)
+
+    # File copies and the zip run outside any DB transaction.
+    reuse_dir: Path | None = None
+    if latest is not None:
+        previous = Path(str(latest["path"]))
+        if previous.is_dir():
+            reuse_dir = previous
+    package_dir, zip_path = export_evidence_package(event, segment, package_dir=reuse_dir)
     fields = evidence_fields(event, segment)
     evidence = Evidence(
         event_id=str(event["id"]),
@@ -648,24 +782,33 @@ def _export_confirmed_event(conn: Any, event: dict[str, Any], now: str) -> dict[
     submission = get_upload_adapter().submit(evidence)
     if not submission.ok:
         raise HTTPException(status_code=400, detail=submission.message)
-    export_id = new_id()
-    conn.execute(
-        "INSERT INTO exports (id, event_id, path, zip_path, created_at) VALUES (?, ?, ?, ?, ?)",
-        (export_id, event["id"], str(package_dir), str(zip_path), now),
-    )
-    payload: dict[str, Any] = {
+
+    with connect() as conn:
+        if latest is not None and str(package_dir) == str(latest["path"]):
+            # Re-export into the same package dir: refresh the row instead of
+            # registering a duplicate with an identical path.
+            export_id = str(latest["id"])
+            conn.execute(
+                "UPDATE exports SET zip_path = ?, created_at = ? WHERE id = ?",
+                (str(zip_path), now, export_id),
+            )
+        else:
+            export_id = new_id()
+            conn.execute(
+                "INSERT INTO exports (id, event_id, path, zip_path, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (export_id, event["id"], str(package_dir), str(zip_path), now),
+            )
+    return {
         "id": export_id,
         "event_id": event["id"],
         "path": str(package_dir),
         "zip_path": str(zip_path),
+        "report_url": get_settings().report_url or None,
         "download_url": f"/api/exports/{export_id}/download",
         "adapter": submission.adapter,
         "submission_message": submission.message,
     }
-    report_url = get_settings().report_url
-    if report_url:
-        payload["report_url"] = report_url
-    return payload
 
 
 def _extract_path_label(labels: list[str], prefix: str) -> str | None:

@@ -13,6 +13,7 @@ from backend.tests.synthetic import install_fake_detector, write_tesla_folder
 
 
 def test_fixture_import_analyze_confirm_and_export(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("BLINKLANE_REPORT_URL", raising=False)
     monkeypatch.setenv("BLINKLANE_DATA_DIR", str(tmp_path / "data"))
     folder = tmp_path / "TeslaCam" / "SavedClips" / "2026-05-25_18-30-02"
     write_tesla_folder(folder)
@@ -57,8 +58,8 @@ def test_fixture_import_analyze_confirm_and_export(monkeypatch, tmp_path: Path) 
     assert review.json()["review_status"] == "confirmed"
     assert review.json()["location"] == "合成路段"
     assert review.json()["plate"] == "测A12345"
-    assert review.json().get("report_url") in (None, "")
-    assert review.json()["zip_path"]
+    assert review.json()["export"]["report_url"] in (None, "")
+    assert review.json()["export"]["zip_path"]
     assert review.json()["left_repeater_url"]
     assert review.json()["right_repeater_url"]
 

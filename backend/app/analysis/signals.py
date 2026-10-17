@@ -31,7 +31,10 @@ def signal_energy_from_frame(frame: np.ndarray, bbox: BBox) -> tuple[float, floa
         return 0.0, 0.0
 
     # Tesla front camera usually sees the rear of the target car. Use the lower side bands
-    # where rear turn indicators are most likely to appear.
+    # where rear turn indicators are most likely to appear. The 0.35/0.9 vertical band and
+    # the 0.38/0.62 side split were tuned on synthetic fixtures: indicator glow sits in the
+    # lower half of the bbox, and the splits leave a center gap so one side's light does
+    # not bleed into the other.
     y_start = int(h * 0.35)
     y_end = int(h * 0.9)
     left_roi = crop[y_start:y_end, : max(1, int(w * 0.38))]
@@ -43,11 +46,16 @@ def _amber_energy(roi: np.ndarray) -> float:
     if roi.size == 0:
         return 0.0
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    # Hue 8..45 covers amber/turn-signal orange in OpenCV HSV; 45 is the empirical
+    # upper bound before yellow-ish headlight scatter starts leaking in.
     lower = np.array([8, 70, 80], dtype=np.uint8)
     upper = np.array([45, 255, 255], dtype=np.uint8)
     mask = cv2.inRange(hsv, lower, upper)
     bright = hsv[:, :, 2] > 120
     score = float(np.mean((mask > 0) & bright))
+    # The *8.0 gain maps a small blinking pixel fraction to a usable 0..1 energy.
+    # It is coupled to detect_turn_signal: the 0.12 dark bound and the 0.18
+    # dynamic-range gate there assume this scaling, so tune them together.
     return max(0.0, min(1.0, score * 8.0))
 
 
@@ -119,11 +127,23 @@ def detect_turn_signal(series: SignalSeries, start_s: float, end_s: float) -> tu
     peak_count = _count_peaks(arr)
     high_ratio = float(np.mean(arr > max(0.12, float(np.mean(arr) + np.std(arr) * 0.5))))
 
+    # 0.45 base + dynamic range + per-peak bonus: empirically tuned on synthetic
+    # blink fixtures; interacts with the 0.18 range gate and the *8.0 energy gain.
     if dynamic_range > 0.18 and peak_count >= 2 and 0.08 <= high_ratio <= 0.65:
         score = min(1.0, 0.45 + dynamic_range + peak_count * 0.08)
         return score, "turn_signal_observed"
 
-    if float(np.max(arr)) < 0.12 or dynamic_range < 0.08:
+    if float(np.max(arr)) < 0.12:
+        # 0.12 dark bound: below this the ROI saw nothing amber at all.
+        return 0.0, "turn_signal_not_observed"
+
+    if dynamic_range < 0.08:
+        # Flat series. A flat-BRIGHT series (a steady lamp, glare, or a frozen
+        # bright frame) is not a blink pattern, but scoring it 0.0 would read as
+        # "definitely no signal" and maximize false suspicion — call it
+        # inconclusive instead. Flat-dark stays "not observed".
+        if float(np.mean(arr)) >= 0.5:
+            return 0.5, "turn_signal_inconclusive"
         return 0.0, "turn_signal_not_observed"
 
     return 0.35, "turn_signal_inconclusive"

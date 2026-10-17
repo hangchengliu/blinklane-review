@@ -4,23 +4,31 @@ import type {
   Health,
   ImportResponse,
   Job,
+  ReviewResponse,
   ReviewStatus,
   VolumeScan
 } from "./types";
 
+const DEFAULT_TIMEOUT_MS = 60_000;
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
+    ...init,
+    signal: init?.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers || {})
-    },
-    ...init
+    }
   });
   if (!response.ok) {
     let detail = response.statusText;
     try {
       const body = await response.json();
-      detail = body.detail || detail;
+      if (typeof body?.detail === "string") {
+        detail = body.detail;
+      } else if (body?.detail != null) {
+        detail = JSON.stringify(body.detail);
+      }
     } catch {
       // Keep status text.
     }
@@ -30,26 +38,39 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => request<Health>("/api/health"),
-  volumes: () => request<VolumeScan>("/api/volumes"),
-  importFolder: (folderPath: string) =>
+  health: (signal?: AbortSignal) => request<Health>("/api/health", { signal }),
+  volumes: (signal?: AbortSignal) => request<VolumeScan>("/api/volumes", { signal }),
+  importFolder: (folderPath: string, signal?: AbortSignal) =>
     request<ImportResponse>("/api/import", {
       method: "POST",
-      body: JSON.stringify({ folder_path: folderPath })
+      body: JSON.stringify({ folder_path: folderPath }),
+      signal
     }),
-  analyze: (sessionId: string) =>
+  analyze: (sessionId: string, signal?: AbortSignal) =>
     request<Job>("/api/analyze", {
       method: "POST",
-      body: JSON.stringify({ session_id: sessionId })
+      body: JSON.stringify({ session_id: sessionId }),
+      signal
     }),
-  job: (jobId: string) => request<Job>(`/api/jobs/${jobId}`),
-  events: (sessionId?: string) =>
-    request<EventItem[]>(sessionId ? `/api/events?session_id=${sessionId}` : "/api/events"),
-  review: (eventId: string, reviewStatus: ReviewStatus, location: string, note: string, plate: string) =>
-    request<EventItem>(`/api/events/${eventId}/review`, {
+  job: (jobId: string, signal?: AbortSignal) => request<Job>(`/api/jobs/${jobId}`, { signal }),
+  events: (sessionId?: string, signal?: AbortSignal) =>
+    request<EventItem[]>(
+      sessionId ? `/api/events?${new URLSearchParams({ session_id: sessionId })}` : "/api/events",
+      { signal }
+    ),
+  review: (
+    eventId: string,
+    reviewStatus: ReviewStatus,
+    location: string,
+    note: string,
+    plate: string,
+    signal?: AbortSignal
+  ) =>
+    request<ReviewResponse>(`/api/events/${eventId}/review`, {
       method: "PATCH",
-      body: JSON.stringify({ review_status: reviewStatus, location, note, plate })
+      body: JSON.stringify({ review_status: reviewStatus, location, note, plate }),
+      signal
     }),
-  exportEvent: (eventId: string) =>
-    request<ExportResponse>(`/api/events/${eventId}/export`, { method: "POST" })
+  exportEvent: (eventId: string, signal?: AbortSignal) =>
+    request<ExportResponse>(`/api/events/${eventId}/export`, { method: "POST", signal })
 };

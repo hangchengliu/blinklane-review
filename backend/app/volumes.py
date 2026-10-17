@@ -42,7 +42,7 @@ def discover_tesla_folders(roots: list[Path], *, max_depth: int = 6) -> list[Pat
         for dirpath, dirnames, filenames in os.walk(base):
             current = Path(dirpath)
             depth = len(current.relative_to(base).parts)
-            if depth > max_depth:
+            if depth >= max_depth:
                 dirnames.clear()
                 continue
             dirnames[:] = [name for name in dirnames if not name.startswith(".")]

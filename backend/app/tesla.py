@@ -76,13 +76,15 @@ def find_tesla_clips(folder_path: str | Path) -> list[TeslaClipInfo]:
 
 def probe_video(path: str | Path) -> VideoProbe:
     cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        return VideoProbe(duration_s=None, fps=None, width=None, height=None)
-    fps = cap.get(cv2.CAP_PROP_FPS) or None
-    frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or None
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) or None
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) or None
-    cap.release()
+    try:
+        if not cap.isOpened():
+            return VideoProbe(duration_s=None, fps=None, width=None, height=None)
+        fps = cap.get(cv2.CAP_PROP_FPS) or None
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or None
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) or None
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) or None
+    finally:
+        cap.release()
     duration = frame_count / fps if fps and frame_count else None
     return VideoProbe(duration_s=duration, fps=fps, width=width, height=height)
 

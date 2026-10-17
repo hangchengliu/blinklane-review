@@ -10,6 +10,14 @@ BlinkLane 默认本地优先运行。
 - Generated clips, frames, metadata, and exports are stored under `.blinklane_data/` (or an existing `.vcy_data/` directory).
 - The app does not require an account or cloud backend.
 
+## Network Egress
+
+BlinkLane contacts the network only in these cases:
+
+- YOLO weight download on first use (Ultralytics fetches the configured `*.pt` file once).
+- Ultralytics analytics — disabled in code (`backend/app/analysis/pipeline.py`).
+- Nothing else: no accounts, no telemetry, no cloud upload.
+
 ## Public Issue Hygiene
 
 Do not upload real dashcam files to GitHub issues. Use synthetic clips, blurred screenshots, or textual descriptions.

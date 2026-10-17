@@ -26,6 +26,9 @@ class SignalSeries:
     timestamps_s: list[float] = field(default_factory=list)
     left_energy: list[float] = field(default_factory=list)
     right_energy: list[float] = field(default_factory=list)
+    # max(left, right) snapshot taken before repeater energy is merged in;
+    # empty when no repeater was merged (then left/right ARE the front camera).
+    front_energy: list[float] = field(default_factory=list)
 
 
 @dataclass

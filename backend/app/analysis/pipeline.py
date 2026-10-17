@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
+import math
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,12 +13,14 @@ import cv2
 from ..config import Settings, get_settings
 from ..tesla import new_id
 from ..video import create_annotated_clip, extract_raw_clip, grab_key_frame
-from .lane import detect_lane_overlay, lane_reference_x
+from .lane import detect_lane_lines, lane_reference_x
 from .signals import merge_aligned_repeater_energy, repeater_amber_energy, signal_energy_from_frame
 from .trajectory import detect_lane_change_events
 from .types import EventCandidate, SignalSeries, TrackSample
 
 VEHICLE_CLASS_IDS = [2, 3, 5, 7]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,7 +73,10 @@ def analyze_segment(
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    fps = cap.get(cv2.CAP_PROP_FPS) or 0
+    if fps <= 0:
+        logger.warning("Video %s reports no FPS; assuming 30", video_path)
+        fps = 30
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     frame_step = max(1, int(round(fps / sample_rate_fps)))
     model = build_model(model_name)
@@ -88,6 +95,10 @@ def analyze_segment(
             frame_index += 1
             continue
 
+        # Known trade-off: the tracker runs with persist=True but only sees every
+        # frame_step-th frame, so very fast lateral motion between samples can
+        # switch or drop track IDs. Dashcam motion at the default sample rate is
+        # slow enough that this is acceptable, and it keeps analysis cheap.
         result = model.track(
             frame,
             persist=True,
@@ -98,7 +109,7 @@ def analyze_segment(
             verbose=False,
         )[0]
         timestamp_s = frame_index / fps
-        _overlay, lane_lines = detect_lane_overlay(frame)
+        lane_lines = detect_lane_lines(frame)
         lane_center = lane_reference_x(lane_lines, frame.shape[1], frame.shape[0])
         if lane_center is not None:
             lane_center_by_timestamp[timestamp_s] = lane_center
@@ -108,6 +119,10 @@ def analyze_segment(
             class_ids = result.boxes.cls.int().cpu().tolist()
             names = result.names
             for bbox, track_id, class_id in zip(boxes, track_ids, class_ids, strict=False):
+                # Detector glitches can yield NaN/inf boxes; skip those samples
+                # here so a single bad box cannot kill the whole analysis job.
+                if not all(math.isfinite(float(value)) for value in bbox):
+                    continue
                 class_name = str(names.get(class_id, class_id))
                 sample = TrackSample(
                     track_id=int(track_id),
@@ -149,12 +164,20 @@ def _merge_repeater_signals(
     signal_series_by_track: dict[int, SignalSeries],
     repeater_paths: dict[str, Path],
 ) -> list[str]:
-    """Blend left/right repeater amber energy into each track at the same timestamps."""
+    """Blend left/right repeater amber energy into each track at the same timestamps.
+
+    Repeater energy is evidence: it may raise a track's turn-signal score, but
+    trajectory.py caps the label at "inconclusive" unless the front camera also
+    saw amber, so a blinking side vehicle cannot by itself clear an event.
+    """
 
     warnings: list[str] = []
     if not signal_series_by_track or not repeater_paths:
         return warnings
-    timestamps = next(iter(signal_series_by_track.values())).timestamps_s
+    # Sample on the union of ALL tracks' timestamps: the old first-track grid
+    # silently disabled repeater evidence for every other track when the first
+    # track was short.
+    timestamps = _union_timestamps(signal_series_by_track)
     merged: dict[str, list[tuple[float, float]]] = {}
     for camera, side in (("left_repeater", "left"), ("right_repeater", "right")):
         path = repeater_paths.get(camera)
@@ -165,9 +188,41 @@ def _merge_repeater_signals(
         except Exception as exc:
             warnings.append(f"{camera} failed: {exc}")
     for series in signal_series_by_track.values():
+        # Snapshot front-camera energy before the repeater merge so an
+        # "observed" label can demand front-camera corroboration later.
+        series.front_energy = [
+            max(left, right)
+            for left, right in zip(series.left_energy, series.right_energy, strict=False)
+        ]
         for side, samples in merged.items():
             merge_aligned_repeater_energy(series, samples, side=side)
     return warnings
+
+
+def _union_timestamps(signal_series_by_track: dict[int, SignalSeries]) -> list[float]:
+    """Sorted union of every track's timestamps.
+
+    Timestamps closer than half the smallest sampling period are treated as the
+    same instant, so tracks on the same clock do not produce near-duplicates.
+    """
+
+    all_timestamps = sorted(
+        timestamp for series in signal_series_by_track.values() for timestamp in series.timestamps_s
+    )
+    if not all_timestamps:
+        return []
+    periods = [
+        later - earlier
+        for series in signal_series_by_track.values()
+        for earlier, later in zip(series.timestamps_s, series.timestamps_s[1:], strict=False)
+        if later > earlier
+    ]
+    epsilon = min(periods) / 2 if periods else 0.05
+    union = [all_timestamps[0]]
+    for timestamp in all_timestamps[1:]:
+        if timestamp - union[-1] > epsilon:
+            union.append(timestamp)
+    return union
 
 
 def _read_repeater_energies(path: Path, timestamps: list[float]) -> list[tuple[float, float]]:
@@ -177,12 +232,28 @@ def _read_repeater_energies(path: Path, timestamps: list[float]) -> list[tuple[f
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     samples: list[tuple[float, float]] = []
     try:
+        # Frame-index convention is floor(int(timestamp * fps)), matching video.py.
+        by_index: dict[int, list[float]] = defaultdict(list)
         for timestamp in timestamps:
-            frame_index = max(0, int(round(timestamp * fps)))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-            ok, frame = cap.read()
-            energy = repeater_amber_energy(frame) if ok and frame is not None else 0.0
-            samples.append((timestamp, energy))
+            by_index[max(0, int(timestamp * fps))].append(timestamp)
+        indices = sorted(by_index)
+        if indices:
+            # Timestamps are sorted, so seek once to the first needed frame and
+            # walk forward with grab()/retrieve() pairs; random-access seeks per
+            # timestamp are slow and unreliable with some codecs.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, indices[0])
+            next_index = indices[0]
+            for frame_index in indices:
+                while next_index < frame_index and cap.grab():
+                    next_index += 1
+                frame = None
+                if next_index == frame_index and cap.grab():
+                    ok, frame = cap.retrieve()
+                    if not ok:
+                        frame = None
+                    next_index += 1
+                energy = repeater_amber_energy(frame) if frame is not None else 0.0
+                samples.extend((timestamp, energy) for timestamp in by_index[frame_index])
     finally:
         cap.release()
     return samples

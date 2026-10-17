@@ -102,3 +102,23 @@ export interface ExportResponse {
   submission_message?: string;
   report_url?: string | null;
 }
+
+export interface ExportArtifact {
+  id: string;
+  event_id: string;
+  path: string;
+  zip_path: string;
+  report_url?: string | null;
+}
+
+export interface ReviewResponse extends EventItem {
+  export?: ExportArtifact | null;
+  export_error?: string | null;
+}
+
+export interface ExportResult {
+  zip_path: string;
+  download_url?: string | null;
+  submission_message?: string | null;
+  report_url?: string | null;
+}

@@ -40,7 +40,10 @@ def test_fixture_event_stays_above_the_shift_threshold(monkeypatch, tmp_path: Pa
     assert "turn_signal_not_observed" in events[0]["reason_labels"]
 
 
-def test_time_aligned_repeater_blink_suppresses_fixture_event(monkeypatch, tmp_path: Path) -> None:
+def test_repeater_only_blink_does_not_suppress_fixture_event(monkeypatch, tmp_path: Path) -> None:
+    """A blink seen only on the side repeater (an unrelated vehicle alongside) must
+    not clear a genuine no-signal lane change: without front-camera corroboration
+    the label is capped at inconclusive and the event is still emitted."""
     monkeypatch.setenv("BLINKLANE_DATA_DIR", str(tmp_path / "data"))
     folder = tmp_path / "blink"
     front = folder / "2026-05-25_18-30-02-front.mp4"
@@ -56,7 +59,9 @@ def test_time_aligned_repeater_blink_suppresses_fixture_event(monkeypatch, tmp_p
     events = client.get("/api/events", params={"session_id": session_id}).json()
 
     assert job.json()["status"] == "completed", job.json()["message"]
-    assert events == []
+    assert len(events) == 1
+    assert "turn_signal_observed" not in events[0]["reason_labels"]
+    assert "turn_signal_inconclusive" in events[0]["reason_labels"]
 
 
 def test_visible_lane_lines_change_the_fixture_score(monkeypatch, tmp_path: Path) -> None:

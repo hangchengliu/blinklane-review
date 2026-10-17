@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type {
   EventItem,
-  ExportResponse,
+  ExportResult,
   Health,
   ImportResponse,
   Job,
@@ -26,9 +26,11 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [exportResult, setExportResult] = useState<ExportResponse | null>(null);
+  const [exportResult, setExportResult] = useState<{ eventId: string; result: ExportResult } | null>(null);
+  const [exportWarning, setExportWarning] = useState<{ eventId: string; message: string } | null>(null);
   const [volumes, setVolumes] = useState<VolumeScan>({ scanning: false, volumes: [] });
   const loadedVolume = useRef<string | null>(null);
+  const lastVolumeError = useRef<string | null>(null);
 
   const selected = useMemo(
     () => events.find((event) => event.id === selectedId) || events[0] || null,
@@ -36,7 +38,10 @@ export function App() {
   );
 
   useEffect(() => {
-    api.health().then(setHealth).catch((err) => setError(err.message));
+    api
+      .health()
+      .then(setHealth)
+      .catch((err) => setError(err instanceof Error ? err.message : "健康检查失败"));
   }, []);
 
   useEffect(() => {
@@ -44,9 +49,17 @@ export function App() {
     async function pollVolumes() {
       try {
         const data = await api.volumes();
-        if (!stop) setVolumes(data);
+        if (!stop) {
+          setVolumes(data);
+          lastVolumeError.current = null;
+        }
       } catch (err) {
-        if (!stop) setError(err instanceof Error ? err.message : "卷扫描失败");
+        if (stop) return;
+        const message = err instanceof Error ? err.message : "卷扫描失败";
+        if (message !== lastVolumeError.current) {
+          lastVolumeError.current = message;
+          setError(message);
+        }
       }
     }
     void pollVolumes();
@@ -58,26 +71,44 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!job || (job.status !== "queued" && job.status !== "running")) return;
+    const jobId = job?.id;
+    const jobStatus = job?.status;
+    if (!jobId || (jobStatus !== "queued" && jobStatus !== "running")) return;
+    let stop = false;
     const timer = window.setInterval(async () => {
       try {
-        const fresh = await api.job(job.id);
+        const fresh = await api.job(jobId);
+        if (stop) return;
         setJob(fresh);
         if (fresh.status === "completed") {
           await refreshEvents(fresh.session_id);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "任务状态获取失败");
+        if (!stop) setError(err instanceof Error ? err.message : "任务状态获取失败");
       }
     }, 1200);
-    return () => window.clearInterval(timer);
-  }, [job]);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+    };
+  }, [job?.id, job?.status]);
 
   async function refreshEvents(sessionId = importResult?.session.id) {
     if (!sessionId) return;
     const items = await api.events(sessionId);
     setEvents(items);
-    if (items.length && !selectedId) setSelectedId(items[0].id);
+    if (items.length) {
+      setSelectedId((current) => current ?? items[0].id);
+    }
+  }
+
+  async function handleRefresh() {
+    setError("");
+    try {
+      await refreshEvents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "刷新事件失败");
+    }
   }
 
   async function loadFolder(folder: string) {
@@ -91,8 +122,11 @@ export function App() {
       setEvents([]);
       setSelectedId(null);
       setExportResult(null);
+      setExportWarning(null);
       await refreshEvents(result.session.id);
+      loadedVolume.current = folder;
     } catch (err) {
+      if (loadedVolume.current === folder) loadedVolume.current = null;
       setError(err instanceof Error ? err.message : "导入失败");
     } finally {
       setBusy(false);
@@ -105,7 +139,6 @@ export function App() {
     if (imported.length !== 1) return;
     const folder = imported[0].folder_path;
     if (loadedVolume.current === folder) return;
-    loadedVolume.current = folder;
     void loadFolder(folder);
   }, [volumes, importResult, busy]);
 
@@ -132,25 +165,18 @@ export function App() {
   async function handleReview(status: ReviewStatus, location: string, note: string, plate: string) {
     if (!selected) return;
     setError("");
+    setExportWarning(null);
     try {
       const updated = await api.review(selected.id, status, location, note, plate);
       setEvents((items) => items.map((item) => (item.id === updated.id ? updated : item)));
       setSelectedId(updated.id);
-      if (status === "confirmed" && updated.zip_path && updated.download_url) {
-        setExportResult({
-          id: updated.id,
-          event_id: updated.id,
-          path: "",
-          zip_path: updated.zip_path,
-          download_url: updated.download_url,
-          submission_message: updated.submission_message || undefined,
-          report_url: updated.report_url || undefined
-        });
-        if (updated.report_url) {
-          window.open(updated.report_url, "_blank", "noopener,noreferrer");
-        }
+      if (updated.export) {
+        setExportResult({ eventId: updated.id, result: updated.export });
       } else {
         setExportResult(null);
+      }
+      if (updated.export_error) {
+        setExportWarning({ eventId: updated.id, message: updated.export_error });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存复核失败");
@@ -160,12 +186,19 @@ export function App() {
   async function handleExport() {
     if (!selected) return;
     setError("");
+    setExportWarning(null);
     try {
       const exported = await api.exportEvent(selected.id);
-      setExportResult(exported);
+      setExportResult({ eventId: selected.id, result: exported });
     } catch (err) {
       setError(err instanceof Error ? err.message : "导出失败");
     }
+  }
+
+  function handleSelect(id: string) {
+    setSelectedId(id);
+    setExportResult(null);
+    setExportWarning(null);
   }
 
   return (
@@ -179,14 +212,21 @@ export function App() {
       </header>
 
       {error && (
-        <div className="alert error">
+        <div className="alert error" role="alert">
           <AlertCircle size={18} />
           <span>{error}</span>
         </div>
       )}
 
+      {exportWarning && exportWarning.eventId === selected?.id && (
+        <div className="alert warning" role="alert">
+          <AlertCircle size={18} />
+          <span>复核已保存，但证据包导出失败：{exportWarning.message}</span>
+        </div>
+      )}
+
       {health?.messages.map((message) => (
-        <div className="alert warning" key={message}>
+        <div className="alert warning" role="alert" key={message}>
           <AlertCircle size={18} />
           <span>{message}</span>
         </div>
@@ -230,11 +270,14 @@ export function App() {
           <FileVideo size={18} />
           导入
         </button>
-        <button onClick={handleAnalyze} disabled={busy || !importResult || job?.status === "running"}>
+        <button
+          onClick={handleAnalyze}
+          disabled={busy || !importResult || job?.status === "running" || job?.status === "queued"}
+        >
           <Play size={18} />
           开始分析
         </button>
-        <button onClick={() => refreshEvents()} disabled={!importResult}>
+        <button onClick={() => void handleRefresh()} disabled={!importResult}>
           <RefreshCw size={18} />
           刷新事件
         </button>
@@ -253,14 +296,20 @@ export function App() {
             <strong>{job.status}</strong>
             <span>{job.message}</span>
           </div>
-          <div className="progress">
+          <div
+            className="progress"
+            role="progressbar"
+            aria-valuenow={Math.round(job.progress * 100)}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
             <div style={{ width: `${Math.round(job.progress * 100)}%` }} />
           </div>
         </section>
       )}
 
       <section className="workspace">
-        <EventList events={events} selectedId={selected?.id || null} onSelect={setSelectedId} />
+        <EventList events={events} selectedId={selected?.id || null} onSelect={handleSelect} />
         <ReviewPanel
           event={selected}
           onReview={handleReview}
@@ -317,6 +366,7 @@ function EventList({
           className={event.id === selectedId ? "eventRow active" : "eventRow"}
           key={event.id}
           onClick={() => onSelect(event.id)}
+          aria-current={event.id === selectedId ? "true" : undefined}
         >
           <div>
             <strong>{event.vehicle_type}</strong>
@@ -341,7 +391,7 @@ function ReviewPanel({
   event: EventItem | null;
   onReview: (status: ReviewStatus, location: string, note: string, plate: string) => void;
   onExport: () => void;
-  exportResult: ExportResponse | null;
+  exportResult: { eventId: string; result: ExportResult } | null;
 }) {
   const [location, setLocation] = useState("");
   const [note, setNote] = useState("");
@@ -456,16 +506,22 @@ function ReviewPanel({
         </button>
       </div>
 
-      {exportResult && (
+      {exportResult && exportResult.eventId === event.id && (
         <div className="handoff">
-          <a className="download" href={exportResult.download_url}>
-            下载 {exportResult.zip_path.split("/").pop()}
-            {exportResult.submission_message ? ` · ${exportResult.submission_message}` : ""}
-          </a>
-          <p className="handoffPath">本机证据包：{exportResult.zip_path}</p>
-          {exportResult.report_url ? (
+          {exportResult.result.download_url ? (
+            <a className="download" href={exportResult.result.download_url}>
+              下载 {exportResult.result.zip_path.split("/").pop()}
+              {exportResult.result.submission_message ? ` · ${exportResult.result.submission_message}` : ""}
+            </a>
+          ) : null}
+          <p className="handoffPath">本机证据包：{exportResult.result.zip_path}</p>
+          {exportResult.result.report_url ? (
             <p className="handoffHint">
-              已在浏览器打开举报入口。请在该网站自己的页面上传证据包并完成验证码与登录。
+              举报入口：
+              <a href={exportResult.result.report_url} target="_blank" rel="noopener noreferrer">
+                {exportResult.result.report_url}
+              </a>
+              。请在该网站自己的页面上传证据包并完成验证码与登录。
             </p>
           ) : null}
         </div>
@@ -481,7 +537,7 @@ function EventWindowVideo({ src, startS, endS }: { src: string; startS: number; 
     const video = ref.current;
     if (!video) return;
     const seekStart = () => {
-      if (video.currentTime < startS - 0.05) {
+      if (video.currentTime >= endS || video.currentTime < startS - 0.05) {
         video.currentTime = startS;
       }
     };
