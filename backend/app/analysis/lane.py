@@ -7,7 +7,9 @@ import cv2
 import numpy as np
 
 
-def detect_lane_overlay(frame: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int, int, int]]]:
+def detect_lane_lines(frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """Lane candidate lines in full-frame coordinates. No overlay is drawn."""
+
     h, w = frame.shape[:2]
     roi = frame[int(h * 0.45) :, :]
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -21,10 +23,9 @@ def detect_lane_overlay(frame: np.ndarray) -> tuple[np.ndarray, list[tuple[int, 
         minLineLength=max(30, w // 12),
         maxLineGap=40,
     )
-    overlay = frame.copy()
     normalized: list[tuple[int, int, int, int]] = []
     if lines is None:
-        return overlay, normalized
+        return normalized
     # OpenCV 4 returns (N, 1, 4). OpenCV 5 returns (N, 4).
     rows = lines.reshape(-1, 4)
     y_offset = int(h * 0.45)
@@ -36,8 +37,17 @@ def detect_lane_overlay(frame: np.ndarray) -> tuple[np.ndarray, list[tuple[int, 
         if abs(slope) < 0.35:
             continue
         normalized.append((int(x1), int(y1), int(x2), int(y2)))
+    return normalized
+
+
+def detect_lane_overlay(frame: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int, int, int]]]:
+    """Thin wrapper over detect_lane_lines that also draws an annotated copy."""
+
+    lines = detect_lane_lines(frame)
+    overlay = frame.copy()
+    for x1, y1, x2, y2 in lines:
         cv2.line(overlay, (x1, y1), (x2, y2), (17, 130, 108), 2)
-    return overlay, normalized
+    return overlay, lines
 
 
 def lane_reference_x(

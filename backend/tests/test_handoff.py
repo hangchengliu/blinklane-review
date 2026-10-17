@@ -29,15 +29,16 @@ def test_report_url_empty_by_default_on_confirm(monkeypatch, tmp_path: Path) -> 
     )
     assert review.status_code == 200
     body = review.json()
-    assert body.get("report_url") in (None, "")
-    assert body["zip_path"]
+    export = body["export"]
+    assert export["report_url"] in (None, "")
+    assert export["zip_path"]
 
     pending = client.patch(
         f"/api/events/{event['id']}/review",
         json={"review_status": "pending", "location": "路段", "note": "", "plate": "X1"},
     )
     assert pending.status_code == 200
-    assert pending.json().get("report_url") in (None, "")
+    assert "export" not in pending.json()
     assert "zip_path" not in pending.json()
 
 
@@ -58,12 +59,12 @@ def test_report_url_only_when_confirmed(monkeypatch, tmp_path: Path) -> None:
         f"/api/events/{event['id']}/review",
         json={"review_status": "pending", "location": "路段", "note": "", "plate": ""},
     )
-    assert pending.json().get("report_url") in (None, "")
+    assert "export" not in pending.json()
 
     confirmed = client.patch(
         f"/api/events/{event['id']}/review",
         json={"review_status": "confirmed", "location": "路段", "note": "", "plate": "Y2"},
     )
     assert confirmed.status_code == 200
-    assert confirmed.json()["report_url"] == "https://example.test/report"
-    assert confirmed.json()["zip_path"]
+    assert confirmed.json()["export"]["report_url"] == "https://example.test/report"
+    assert confirmed.json()["export"]["zip_path"]

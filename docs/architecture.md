@@ -35,6 +35,7 @@ Agent-oriented run notes and env defaults: [AGENTS.md](../AGENTS.md). Fixture co
 | `BLINKLANE_CLOCK_OFFSET_MINUTES` | `0` (filename clock is local wall time, not UTC) | `VCY_CLOCK_OFFSET_MINUTES` |
 | `BLINKLANE_VOLUME_SCAN` | on (`0` / `false` / `no` / `off` disables) | none |
 | `BLINKLANE_VOLUME_SCAN_INTERVAL_S` | `15` | none |
+| `BLINKLANE_REPORT_URL` | empty (no report handoff link) | none |
 
 ## Storage
 

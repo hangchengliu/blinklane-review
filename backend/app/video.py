@@ -10,6 +10,8 @@ import numpy as np
 from .analysis.lane import detect_lane_overlay
 from .analysis.types import EventCandidate, TrackSample
 
+FFMPEG_TIMEOUT_S = 120
+
 
 def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
@@ -19,25 +21,30 @@ def extract_raw_clip(source: Path, start_s: float, end_s: float, out_path: Path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     duration = max(0.2, end_s - start_s)
     if ffmpeg_available():
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                f"{max(0.0, start_s):.3f}",
-                "-i",
-                str(source),
-                "-t",
-                f"{duration:.3f}",
-                "-c",
-                "copy",
-                str(out_path),
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    f"{max(0.0, start_s):.3f}",
+                    "-i",
+                    str(source),
+                    "-t",
+                    f"{duration:.3f}",
+                    "-c",
+                    "copy",
+                    str(out_path),
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=FFMPEG_TIMEOUT_S,
+            )
+            return
+        except subprocess.TimeoutExpired:
+            # A hung ffmpeg must not stall the pipeline; fall back to OpenCV.
+            pass
     _extract_clip_with_opencv(source, start_s, end_s, out_path)
 
 
@@ -80,6 +87,10 @@ def create_annotated_clip(source: Path, event: EventCandidate, out_path: Path) -
         fps,
         (width, height),
     )
+    if not writer.isOpened():
+        writer.release()
+        cap.release()
+        raise RuntimeError(f"Cannot open VideoWriter for annotated clip: {out_path}")
     samples_by_frame = {sample.frame_index: sample for sample in event.samples}
     frame_index = start_frame
     written = 0
@@ -130,6 +141,10 @@ def _extract_clip_with_opencv(source: Path, start_s: float, end_s: float, out_pa
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
     cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(start_s * fps)))
     writer = cv2.VideoWriter(str(out_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    if not writer.isOpened():
+        writer.release()
+        cap.release()
+        raise RuntimeError(f"Cannot open VideoWriter for raw clip: {out_path}")
     current_frame = int(start_s * fps)
     end_frame = int(end_s * fps)
     written = 0

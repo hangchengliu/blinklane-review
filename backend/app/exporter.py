@@ -18,10 +18,15 @@ PACKAGE_FILES = (
 )
 
 
-def export_evidence_package(event: dict[str, Any], segment: dict[str, Any]) -> tuple[Path, Path]:
+def export_evidence_package(
+    event: dict[str, Any],
+    segment: dict[str, Any],
+    package_dir: Path | None = None,
+) -> tuple[Path, Path]:
     settings = get_settings()
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    package_dir = settings.data_dir / "exports" / f"event_{event['id']}_{stamp}"
+    if package_dir is None:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        package_dir = settings.data_dir / "exports" / f"event_{event['id']}_{stamp}"
     package_dir.mkdir(parents=True, exist_ok=True)
 
     copy_if_exists(event.get("raw_clip_path"), package_dir / "raw_clip.mp4")
